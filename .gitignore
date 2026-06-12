@@ -61,3 +61,4 @@ Thumbs.db
 /.codex/
 /.gshare
 benchmarks/context-maintenance-e2e/run/
+desktop/wails.json
