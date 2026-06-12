@@ -18,6 +18,7 @@ import {
   Pencil,
   Trash2,
   Brain,
+  ChevronDown,
   Cpu,
   Palette,
 } from "lucide-react";
@@ -47,6 +48,7 @@ import { OnboardingOverlay } from "./components/OnboardingOverlay";
 import { AppChrome } from "./components/AppChrome";
 import { ProjectTree } from "./components/ProjectTree";
 import { CopyButton } from "./components/CopyButton";
+import { AnchoredPopover } from "./components/AnchoredPopover";
 import { parseTodos } from "./lib/tools";
 import { shouldShowTodoPanel } from "./lib/todoVisibility";
 import {
@@ -814,6 +816,7 @@ export default function App() {
     return unsub;
   }, []);
 
+
   const [workspacePanelResizing, setWorkspacePanelResizing] = useState(false);
   const [workspacePanelMaximized, setWorkspacePanelMaximized] = useState(false);
   const [rightDockMode, setRightDockMode] = useState<RightDockMode>("context");
@@ -826,6 +829,27 @@ export default function App() {
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
   const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
   const [transientOverlayDismissSignal, setTransientOverlayDismissSignal] = useState(0);
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchLoading, setBranchLoading] = useState(false);
+  const branchAnchorRef = useRef<HTMLButtonElement>(null);
+  const [gitBranch, setGitBranch] = useState("");
+  const [gitAvailable, setGitAvailable] = useState(false);
+
+  // Fetch git branch info when the dock refresh key changes.
+  useEffect(() => {
+    let cancelled = false;
+    app.WorkspaceChanges().then((r) => {
+      if (cancelled) return;
+      setGitBranch(r.gitBranch ?? "");
+      setGitAvailable(r.gitAvailable);
+    }).catch(() => {
+      setGitBranch("");
+      setGitAvailable(false);
+    });
+    return () => { cancelled = true; };
+  }, [dockRefreshKey]);
+
   const [desktopPlatform, setDesktopPlatform] = useState<DesktopPlatform>(detectBrowserPlatform);
   const [expandThinking, setExpandThinking] = useState(false);
   const [statusBarStyle, setStatusBarStyle] = useState<"icon" | "text">("text");
@@ -2482,6 +2506,61 @@ export default function App() {
             <div className="topicbar__actions">
               {!sidebarImDetailConnection && (
               <>
+              {gitAvailable && gitBranch && (
+                <div className="workspace-branch-indicator" style={{ marginRight: 50 }}>
+                  <GitBranch size={13} />
+                  <button
+                    ref={branchAnchorRef}
+                    className="workspace-branch-name"
+                    type="button"
+                    onClick={async () => {
+                      setBranchMenuOpen((prev) => !prev);
+                      if (!branchMenuOpen && branches.length === 0) {
+                        setBranchLoading(true);
+                        try {
+                          const list = await app.GitBranches();
+                          setBranches(list);
+                        } finally {
+                          setBranchLoading(false);
+                        }
+                      }
+                    }}
+                  >
+                    <span>{gitBranch}</span>
+                    <ChevronDown size={10} />
+                  </button>
+                  <AnchoredPopover
+                    open={branchMenuOpen}
+                    anchorRef={branchAnchorRef}
+                    onClose={() => setBranchMenuOpen(false)}
+                    className="workspace-branch-menu"
+                  >
+                    <div className="workspace-branch-menu__inner">
+                      {branchLoading ? (
+                        <div className="workspace-branch-menu__loading">{t("workspace.loading")}</div>
+                      ) : (
+                        branches.map((b) => (
+                          <button
+                            key={b}
+                            className={`workspace-branch-menu__item${b === gitBranch ? " workspace-branch-menu__item--active" : ""}`}
+                            type="button"
+                            disabled={b === gitBranch}
+                            onClick={async () => {
+                              setBranchMenuOpen(false);
+                              try {
+                                await app.GitCheckout(b);
+                              } catch { /* silent — refresh will reflect actual state */ }
+                            }}
+                          >
+                            <GitBranch size={13} />
+                            <span>{b}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </AnchoredPopover>
+                </div>
+              )}
               <CopyButton
                 getText={getSessionMarkdown}
                 label={t("topicBar.copyAll")}
