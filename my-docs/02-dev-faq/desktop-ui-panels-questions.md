@@ -185,6 +185,31 @@ Goal 是 Reasonix 的 **"自主目标推进"模式**。设定一个目标后，A
 
 ---
 
+## Q7: 分叉对话最多能分几次？
+
+**没有深度限制。**
+
+分叉的底层模型很简单：
+
+1. **每个分支是一个独立 `.jsonl` 会话文件**，旁边一个 `.meta` 文件记录 `ParentID`（指向父分支的 ID）
+2. **会话树**是运行时扫描所有 `.jsonl` 文件的 meta、按 `ParentID` 拼出来的（`internal/control/branches.go:39-92`）
+3. 树渲染函数 `walk()` 是递归的，**没有任何 `depth > maxDepth` 的终止检查**（`branches.go:64-83`）
+4. 唯一的循环防护是 `seen` 映射做环路检测（`branches.go:65`），防止 malformed meta 导致死循环
+
+**实际限制：**
+- 磁盘空间（每个 `.jsonl` 存一份消息副本）
+- 深度太深时 `/branch` 文本树的视觉可读性变差（但代码不拦你）
+- 标题显示：`branchTitle()` 使用 `maxRunes := 32 - depth*4`，但最小值钳制在 18（`branches.go:103`），深层的标题会短一些但不隐藏
+
+**代码位置：**
+- BranchMeta 定义（含 ParentID）：`internal/agent/branch.go:18-30`
+- Fork 核心逻辑：`internal/control/controller.go:1521-1591`
+- 会话树渲染：`internal/control/branches.go:39-92`
+- 前端 fork 按钮：`desktop/frontend/src/components/Message.tsx:277-286`
+- 前端 fork 处理：`desktop/frontend/src/lib/useController.ts:988-1001`
+
+---
+
 ## Q6: 独立规划模型设为 pro，默认模型设为 flash，Goal 中就是 pro 规划 + flash 执行？
 
 **是的，完全正确。** 这就是双模型协作（Coordinator）架构的工作方式。
