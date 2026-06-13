@@ -18,6 +18,7 @@
 | 06 | [06-agent-capability-assessment.md](01-dev-read/06-agent-capability-assessment.md) | Agent 能力评估报告 |
 | 07 | [07-vs-claude-code-codex-analysis.md](01-dev-read/07-vs-claude-code-codex-analysis.md) | 与 Claude Code / Codex 的对比分析 |
 | 09 | [09-tool-system.md](01-dev-read/09-tool-system.md) | Tool System — 工具注册、分发、执行 + 全量工具目录 |
+| 10 | [10-agent-core-loop.md](01-dev-read/10-agent-core-loop.md) | Agent Core Loop — Run 完整循环 + 六道防护机制 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 
