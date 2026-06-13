@@ -17,7 +17,7 @@
 | 05 | [05-loop-lifecycle.md](01-dev-read/05-loop-lifecycle.md) | Loop 模式生命周期追踪记录 |
 | 06 | [06-agent-capability-assessment.md](01-dev-read/06-agent-capability-assessment.md) | Agent 能力评估报告 |
 | 07 | [07-vs-claude-code-codex-analysis.md](01-dev-read/07-vs-claude-code-codex-analysis.md) | 与 Claude Code / Codex 的对比分析 |
-| 08 | [08-three-modes-analysis.md](01-dev-read/08-three-modes-analysis.md) | Normal / Plan / Goal 三种模式的对比分析 |
+| 09 | [09-tool-system.md](01-dev-read/09-tool-system.md) | Tool System — 工具注册、分发、执行 + 全量工具目录 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 
