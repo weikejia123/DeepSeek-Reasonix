@@ -4,6 +4,7 @@
 |---|------|------|------|------|
 | 1 | 2026-07-12 | `fix/mcp-shell-path` | fix: unconditionally enrich shell PATH for MCP stdio subprocesses | Open [#4220](https://github.com/esengine/DeepSeek-Reasonix/pull/4220) |
 | 2 | 2026-07-13 | `feat/file-link-navigation` | feat: workspace file path linkification in assistant messages | Open [#4284](https://github.com/esengine/DeepSeek-Reasonix/pull/4284) |
+| 2.1 | 2026-07-14 | `fix/chinese-path-link` | fix: decodeURIComponent in openRightDockFile to support Chinese filenames | ✅ 已测试通过 |
 
 ## 规则
 
