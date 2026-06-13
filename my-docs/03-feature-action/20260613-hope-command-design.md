@@ -128,3 +128,150 @@ internal/control/
 2. **系统提示词模板语法**：是否需要支持变量插值（如 `{hope_text}`、`{max_turns}`）？当前 TOML 多行字符串 + 硬编码组合足够
 3. **hope 与 goal 是否互斥**？一个会话能否同时运行 hope 和 goal？建议互斥（与 plan 互斥的设计一致）
 4. **最大轮次是否允许运行时通过 `/hope --max-turns N` 覆盖**？建议允许，但不超过全局配置的硬上限
+
+---
+
+## 可行性评估（2026-06-13 补充）
+
+> 基于现有代码的完整走查，对上述设计草案的可行性、风险和替代方案评估。
+
+### 结论速览
+
+| 维度 | 评估 |
+|------|------|
+| 技术可行性 | ✅ 可实现 |
+| 架构合理性 | ⚠️ 复制策略存在根本性问题 |
+| 推荐方案 | 先参数化 goal，hope 作为薄配置层 |
+| 实际工作量 | 设计草案估算的 2-3 倍 |
+
+### 设计草案触达面审计
+
+文档列的 20 个触达点基本准确，但遗漏了 4 个关键耦合点：
+
+#### 遗漏 1：前端 `collaborationMode` 是闭合枚举（严重）
+
+```typescript
+// types.ts:296
+export type CollaborationMode = "normal" | "plan" | "goal";
+```
+
+Hope 需要 `"hope"` 作为第四个值。涟漪效应：
+
+| 文件 | 影响 |
+|------|------|
+| `types.ts` | 类型扩展 |
+| `App.tsx` | ~10 处 `=== "goal"` 判断需加 hope 分支；`handleSend` 中 goal 模式自动 `/goal` 逻辑需 hope 对称处理 |
+| `Composer.tsx` | `goalModeOn` 拆分为 `goalModeOn`/`hopeModeOn`；新 hope chip UI；placeholder/disabled 逻辑 |
+| `StatusBar.tsx` | 新 hope 模式指示器 |
+| `TabBar.tsx` | 新 hope 模式标记 |
+
+#### 遗漏 2：Tab 持久化需要新字段（中等）
+
+```go
+// desktop/app.go:1841-1842
+Goal       string `json:"goal,omitempty"`
+GoalStatus string `json:"goalStatus,omitempty"`
+```
+
+Hope 需要 `Hope` + `HopeStatus` 字段，波及 tab 恢复（`app.go:402`）、mode 切换清理（`app.go:770-784`）、`newCtrl` 初始化（`app.go:3411/3507/3574`）。
+
+#### 遗漏 3：`Compose()` 注入顺序
+
+`input.go:93-103` 中 goal 和 plan 可以同时激活（goal turns 可能触发 plan approval）。Hope 与 plan 同时激活时的注入顺序需明确定义。
+
+#### 遗漏 4：`auto_plan.go` 互斥检查
+
+```go
+// auto_plan.go:44-48
+goalActive := c.goalActive()
+if plan || goalActive { return false }
+```
+
+Hope 激活时也应跳过 auto-plan，需加 `hopeActive` 检查。
+
+### 复制策略的核心问题
+
+审视 goal 和 hope 的实际差异：
+
+| 维度 | Goal | Hope (设计) | 实际差异 |
+|------|------|------------|----------|
+| 循环机制 | `continueGoal()` | `continueHope()` | **完全一致** |
+| 状态标记 | `[goal:xxx]` | `[hope:xxx]` | 正则不同 |
+| 提示词 | 硬编码 | 可配置 TOML | **唯一实质差异** |
+| 最大轮次 | `maxGoalAutoTurns = 50` | 可配置 | 参数化即可 |
+| 3-strike 阻塞检测 | `sameGoalBlock()` | 同样逻辑 | **完全一致** |
+| stop 方法 | `stopGoal()` | `stopHope()` | **完全一致** |
+
+`continueGoal` 的 **60 行核心循环逻辑在 hope 版本中是逐字相同的**，唯一的变量是标记正则、提示词文本、最大轮次常量。复制意味着未来任何一个 bug fix 需要同步两个文件。
+
+### 工作量重估
+
+| 层次 | 设计草案估算 | 实际预估 | 膨胀原因 |
+|------|-------------|---------|----------|
+| `controller.go` 字段+方法 | ~200 行 | ~250 行 | |
+| `input.go` 常量+函数 | ~60 行 | ~80 行 | |
+| `hope.go` 新文件 | 未提及 | ~80 行 | 循环/状态/标记解析 |
+| `auto_plan.go` | 1 行 | 2 行 | |
+| `desktop/app.go` | ~30 行 | ~60 行 | 持久化+API+help |
+| 前端 | ~50 行 | **~150 行** | `CollaborationMode` 涟漪效应 |
+| i18n + 配置 | ~20 行 | ~25 行 | |
+| **合计** | ~350 行 | **~650 行** | |
+
+### 风险矩阵
+
+| 风险 | 严重度 | 描述 |
+|------|--------|------|
+| **双倍维护负担** | 🔴 高 | 60 行完全相同循环逻辑需在 goal/hope 两处同步修复 |
+| **前端枚举爆炸** | 🔴 高 | `CollaborationMode` 从 3→4 值，每个 `=== "goal"` 需维护 hope 对等分支 |
+| **goal bug 遗漏同步** | 🟡 中 | 修 goal 时可能忘记同修 hope |
+| **hope.go 循环依赖** | 🟡 中 | `continueHope()` 需调用 controller 私有方法 |
+| **/hope 与 /goal 混淆** | 🟡 中 | 用户可能不清楚场景区别 |
+| **配置 schema 膨胀** | 🟢 低 | 向后兼容容易 |
+
+### 推荐替代方案：参数化而非复制
+
+**Phase 1（~3 天，不动前端）：参数化 goal**
+
+```go
+type GoalConfig struct {
+    ContinuePrompt string // 替代 goalContinueTurn
+    SystemBlock     string // 替代 activeGoalBlock 的提示词
+    MaxTurns        int    // 替代 maxGoalAutoTurns
+    MarkerPrefix    string // "goal" 或 "hope"
+}
+
+func (c *Controller) continueGoal(ctx context.Context, cfg GoalConfig) error {
+    // 参数化后的循环逻辑，复用现有代码
+}
+
+func parseStatusMarker(reply, prefix string) (status, reason string, ok bool) {
+    // 参数化正则生成
+}
+```
+
+**Phase 2（~2 天）：hope 作为薄配置层**
+
+```go
+// hope.go — 仅 ~30 行
+func (c *Controller) StartHope(hopeText string) {
+    c.hopeConfig = loadHopeConfig() // 从 TOML 读取
+}
+
+func (c *Controller) continueHope(ctx context.Context) error {
+    return c.continueGoal(ctx, c.hopeConfig)
+}
+```
+
+输出：可扩展框架——第三个自主模式只需一个 config 对象。
+
+### 与当前 goal 代码的对照索引
+
+| 现有代码 | 行号 | 参数化后 |
+|----------|------|----------|
+| `activeGoalBlock()` | input.go:134-146 | 接受 `GoalConfig.SystemBlock` 参数 |
+| `goalContinueTurn` | controller.go:207 | 移入 `GoalConfig.ContinuePrompt` |
+| `continueGoal()` | controller.go:590-607 | 接受 `GoalConfig` 参数 |
+| `advanceGoalAfterTurn()` | controller.go:609-656 | 接受 `GoalConfig` — 生成正确正则 |
+| `parseGoalStatusMarker()` | controller.go:658-703 | 改为 `parseStatusMarker(reply, prefix)` |
+| `Compose()` | input.go:93-103 | goal 和 hope 共用注入逻辑，提示词不同 |
+| `auto_plan.go:44-48` | auto_plan.go | 增加 `hopeActive` 检查 |
