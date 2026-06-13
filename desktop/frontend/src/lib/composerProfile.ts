@@ -121,6 +121,9 @@ export function reconcileComposerProfile(current: ComposerProfile | undefined, b
   const pending: ComposerProfilePending = {};
   const next: ComposerProfile = { ...backend, pending };
 
+  // Carry over local-only fields not tracked in profileFields.
+  next.loopActive = current.loopActive;
+
   for (const field of profileFields) {
     if (!current.pending[field]) continue;
     if (fieldValue(current, field) === fieldValue(backend, field)) continue;
