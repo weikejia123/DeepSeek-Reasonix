@@ -836,6 +836,7 @@ export default function App() {
   const [transientOverlayDismissSignal, setTransientOverlayDismissSignal] = useState(0);
   const [gitBranch, setGitBranch] = useState("");
   const [gitAvailable, setGitAvailable] = useState(false);
+  const [changeCount, setChangeCount] = useState(0);
 
   // Fetch git branch info when the dock refresh key changes.
   useEffect(() => {
@@ -844,9 +845,11 @@ export default function App() {
       if (cancelled) return;
       setGitBranch(r.gitBranch ?? "");
       setGitAvailable(r.gitAvailable);
+      setChangeCount(r.files?.length ?? 0);
     }).catch(() => {
       setGitBranch("");
       setGitAvailable(false);
+      setChangeCount(0);
     });
     return () => { cancelled = true; };
   }, [dockRefreshKey]);
@@ -2620,6 +2623,9 @@ export default function App() {
                 <div className="workspace-branch-indicator" style={{ marginRight: 50 }}>
                   <GitBranch size={13} />
                   <span className="workspace-branch-name">{gitBranch}</span>
+                  {changeCount > 0 && (
+                    <span className="workspace-change-count">+{changeCount}</span>
+                  )}
                 </div>
               )}
               <CopyButton
