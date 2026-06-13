@@ -25,6 +25,7 @@
 | [单Turn全链路数据流.md](06-architecture/单Turn全链路数据流.md) | 时序图 + 数据结构变化 + 事件流 |
 | [Skill调用全链路.md](06-architecture/Skill调用全链路.md) | inline/subagent 两条路径 |
 | [Goal模式数据流.md](06-architecture/Goal模式数据流.md) | Goal 全链路 + 最佳实践 + 双模型警告 ← FAQ 归流 |
+| [用户发送消息全生命周期.md](06-architecture/用户发送消息全生命周期.md) | Desktop 前端输入→后端处理→事件回流→渲染完整链路 |
 
 ## 05-09 · 07-extension-guide（L4 扩展指南）
 
