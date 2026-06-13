@@ -121,6 +121,9 @@ export interface AppBindings {
   SetGoalForTab(tabID: string, goal: string): Promise<void>;
   ClearGoal(): Promise<void>;
   ClearGoalForTab(tabID: string): Promise<void>;
+  StartLoop(): Promise<void>;
+  StopLoop(): Promise<void>;
+  LoopActive(): Promise<boolean>;
   Compact(): Promise<void>;
   NewSession(): Promise<void>;
   ClearSession(): Promise<void>;
@@ -1586,6 +1589,17 @@ function makeMockApp(): AppBindings {
         },
         async ClearGoalForTab(tabID) {
           await this.SetGoalForTab(tabID, "");
+        },
+        async StartLoop() {
+          const active = mockTabs.find((t: any) => t.active);
+          if (!active) return;
+        },
+        async StopLoop() {
+          const active = mockTabs.find((t: any) => t.active);
+          if (!active) return;
+        },
+        async LoopActive() {
+          return false;
         },
         async Compact() {},
         async NewSession() {},

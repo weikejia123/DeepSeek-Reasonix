@@ -111,6 +111,7 @@
 | [02-Desktop设计.md](03-feature-action/aloop/02-Desktop设计.md) | aloop 桌面端详细设计 — 配置驱动 + Controller + Desktop UI + 兼容策略 |
 | [03-MVP文件驱动设计.md](03-feature-action/aloop/03-MVP文件驱动设计.md) | aloop MVP 简化方案 — .aloop/ 文件驱动，3 文件改动，不过度设计 |
 | [04-脚本驱动设计.md](03-feature-action/aloop/04-脚本驱动设计.md) | aloop 最终简化版 — .aloop/main.* 脚本驱动，开关式，零配置 |
+| [05-实现记录.md](03-feature-action/aloop/05-实现记录.md) | aloop 实现过程记录 — 改动文件、验证状态、用法 |
 
 ## 40-49 · 04-capabilities（基础能力清单）
 

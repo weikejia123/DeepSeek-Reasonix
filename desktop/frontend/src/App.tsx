@@ -833,6 +833,7 @@ export default function App() {
   const [projectRevision, setProjectRevision] = useState(0);
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
   const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
+  const [loopActive, setLoopActive] = useState(false);
   const [transientOverlayDismissSignal, setTransientOverlayDismissSignal] = useState(0);
   const [gitBranch, setGitBranch] = useState("");
   const [gitAvailable, setGitAvailable] = useState(false);
@@ -1281,6 +1282,19 @@ export default function App() {
     },
     [applyGoal, send],
   );
+  const applyLoopActive = useCallback(async (active: boolean) => {
+    setLoopActive(active);
+    try {
+      if (active) {
+        await app.StartLoop();
+      } else {
+        await app.StopLoop();
+      }
+    } catch (e: any) {
+      notice(`${e}`);
+      setLoopActive(false);
+    }
+  }, [notice]);
   // Shift+Tab toggles only the collaboration axis; Ctrl/Cmd+Y toggles YOLO on the
   // tool-permission axis while preserving the Ask/Auto base mode.
   const cycleMode = useCallback(() => {
@@ -2806,6 +2820,8 @@ export default function App() {
               onSwitchModel={switchModel}
               onSetEffort={setEffort}
               onSetTokenMode={applyTokenMode}
+              loopActive={loopActive}
+              onSetLoopActive={applyLoopActive}
               insertRequest={composerInsertRequest}
               disabled={state.meta?.ready === false || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
               decisionPending={state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}

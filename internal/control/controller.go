@@ -172,6 +172,11 @@ type Controller struct {
 	// it joins the prefix naturally on the next session.
 	pendingMemory []string
 
+	// aloop — timer-driven background turn injection from .aloop/main.sh.
+	loopActive bool
+	loopCancel context.CancelFunc
+	loopRoot   string
+
 	displayRecorder func(content, display string)
 }
 
@@ -3146,4 +3151,97 @@ func (c *Controller) emitRememberResult(r RememberResult) {
 	case strings.TrimSpace(r.CoveredBy) != "":
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PermissionAlreadyAllowedFmt, r.Path, r.CoveredBy)})
 	}
+}
+
+// --- aloop ---
+
+const aloopInterval = 30 * time.Second
+const aloopScriptTimeout = 10 * time.Second
+
+// StartLoop begins executing .aloop/main.sh under projectRoot every 30 seconds.
+// When the script writes non-empty stdout, the text is sent as a normal turn.
+// Skips ticks while a turn is already running. Idempotent when already active.
+func (c *Controller) StartLoop(projectRoot string) error {
+	c.mu.Lock()
+	if c.loopActive {
+		c.mu.Unlock()
+		return fmt.Errorf("aloop already active")
+	}
+	scriptPath := filepath.Join(projectRoot, ".aloop", "main.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("aloop: %w", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.loopActive = true
+	c.loopCancel = cancel
+	c.loopRoot = projectRoot
+	c.mu.Unlock()
+
+	go c.loopRun(ctx, scriptPath)
+	return nil
+}
+
+// StopLoop cancels the aloop goroutine. No-op when not active.
+func (c *Controller) StopLoop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loopActive {
+		return
+	}
+	c.loopCancel()
+	c.loopActive = false
+	c.loopCancel = nil
+	c.loopRoot = ""
+}
+
+// LoopActive reports whether the aloop ticker is running.
+func (c *Controller) LoopActive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loopActive
+}
+
+func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
+	defer func() {
+		c.mu.Lock()
+		c.loopActive = false
+		c.loopCancel = nil
+		c.mu.Unlock()
+	}()
+	ticker := time.NewTicker(aloopInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		c.mu.Lock()
+		if c.running {
+			c.mu.Unlock()
+			continue
+		}
+		c.mu.Unlock()
+		output := c.execLoopScript(ctx, scriptPath)
+		text := strings.TrimSpace(output)
+		if text == "" {
+			continue
+		}
+		c.Send(text)
+	}
+}
+
+func (c *Controller) execLoopScript(ctx context.Context, scriptPath string) string {
+	execCtx, cancel := context.WithTimeout(ctx, aloopScriptTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(execCtx, "bash", scriptPath)
+	cmd.Dir = filepath.Dir(scriptPath)
+	var stdout strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return stdout.String()
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, Eye, FileText, Folder, Gauge, List, MessageSquare, MoreHorizontal, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, Eye, FileText, Folder, Gauge, List, MessageSquare, MoreHorizontal, RefreshCw, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -340,6 +340,8 @@ export function Composer({
   onSwitchModel,
   onSetEffort,
   onSetTokenMode,
+  loopActive = false,
+  onSetLoopActive,
   insertRequest,
   disabled,
   decisionPending = false,
@@ -372,6 +374,8 @@ export function Composer({
   onSwitchModel: (name: string) => void;
   onSetEffort: (level: string) => void;
   onSetTokenMode: (mode: TokenMode) => void;
+  loopActive?: boolean;
+  onSetLoopActive?: (active: boolean) => void;
   insertRequest?: ComposerInsertRequest | null;
   disabled?: boolean;
   decisionPending?: boolean;
@@ -2065,6 +2069,29 @@ export function Composer({
                 >
                   <ShieldAlert size={14} />
                   <span>{t("composer.modeYolo")}</span>
+                </button>
+              </div>
+            </div>
+            <div className="composer-meta__control composer-meta__control--loop" title="定时检测（执行 .aloop/main.sh）">
+              <div className="composer-modebar composer-modebar--loop" data-active={loopActive}>
+                <button
+                  type="button"
+                  className={`composer-modebar__item composer-modebar__item--normal${!loopActive ? " composer-modebar__item--active" : ""}`}
+                  onClick={() => onSetLoopActive?.(false)}
+                  disabled={disabled}
+                  aria-pressed={!loopActive}
+                >
+                  <span>普通</span>
+                </button>
+                <button
+                  type="button"
+                  className={`composer-modebar__item composer-modebar__item--aloop${loopActive ? " composer-modebar__item--active" : ""}`}
+                  onClick={() => onSetLoopActive?.(true)}
+                  disabled={disabled}
+                  aria-pressed={loopActive}
+                >
+                  <RefreshCw size={14} />
+                  <span>定时检测</span>
                 </button>
               </div>
             </div>

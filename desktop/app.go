@@ -1908,6 +1908,7 @@ type Meta struct {
 	TokenMode         string `json:"tokenMode"`
 	Goal              string `json:"goal,omitempty"`
 	GoalStatus        string `json:"goalStatus,omitempty"`
+	LoopActive        bool   `json:"loopActive,omitempty"`
 }
 
 // Meta reports the model label, readiness, any startup error, the working
@@ -1945,6 +1946,7 @@ func (a *App) MetaForTab(tabID string) Meta {
 		TokenMode:         tokenMode,
 		Goal:              goal,
 		GoalStatus:        goalStatus,
+		LoopActive:        tab.Ctrl != nil && tab.Ctrl.LoopActive(),
 	}
 }
 
@@ -1985,6 +1987,66 @@ func (a *App) ClearGoal() {
 
 func (a *App) ClearGoalForTab(tabID string) {
 	a.SetGoalForTab(tabID, "")
+}
+
+// StartLoop starts the aloop background ticker for the active tab. It executes
+// .aloop/main.sh under the tab's workspace root every 30 seconds, sending
+// non-empty stdout as a turn. Returns an error when the script is missing.
+func (a *App) StartLoop() error {
+	return a.StartLoopForTab("")
+}
+
+// StartLoopForTab starts aloop for a specific tab.
+func (a *App) StartLoopForTab(tabID string) error {
+	a.mu.Lock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil {
+		a.mu.Unlock()
+		return fmt.Errorf("no active tab")
+	}
+	ctrl := tab.Ctrl
+	root := tab.WorkspaceRoot
+	a.mu.Unlock()
+	if ctrl == nil {
+		return fmt.Errorf("controller not ready")
+	}
+	return ctrl.StartLoop(root)
+}
+
+// StopLoop stops the aloop ticker for the active tab.
+func (a *App) StopLoop() {
+	a.StopLoopForTab("")
+}
+
+// StopLoopForTab stops aloop for a specific tab.
+func (a *App) StopLoopForTab(tabID string) {
+	a.mu.Lock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil {
+		a.mu.Unlock()
+		return
+	}
+	ctrl := tab.Ctrl
+	a.mu.Unlock()
+	if ctrl != nil {
+		ctrl.StopLoop()
+	}
+}
+
+// LoopActive reports whether the aloop ticker is running for the active tab.
+func (a *App) LoopActive() bool {
+	return a.LoopActiveForTab("")
+}
+
+// LoopActiveForTab reports aloop status for a specific tab.
+func (a *App) LoopActiveForTab(tabID string) bool {
+	a.mu.Lock()
+	tab := a.tabByIDLocked(tabID)
+	a.mu.Unlock()
+	if tab == nil || tab.Ctrl == nil {
+		return false
+	}
+	return tab.Ctrl.LoopActive()
 }
 
 // SetAutoApproveTools toggles YOLO/full-access tool auto-approval:
