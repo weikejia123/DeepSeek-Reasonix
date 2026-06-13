@@ -7,7 +7,16 @@
 | [pr-history.md](00-project-meta/pr-history.md) | 向上游提交的 PR 历史记录 |
 | [gap-analysis-plan.md](00-project-meta/gap-analysis-plan.md) | 文档缺口分析报告 & L1-L4 补全计划 |
 
-## 10-19 · 01-dev-read（源码阅读分析）
+## 05-09 · 05-overview（L1 快速上手）
+
+| 文件 | 说明 |
+|------|------|
+| [what-is-reasonix.md](05-overview/what-is-reasonix.md) | Reasonix 是什么 — 项目定位、设计哲学、三前端架构 |
+| [quick-start.md](05-overview/quick-start.md) | 快速上手 — 安装→配置→第一条消息→核心交互 |
+| [core-concepts.md](05-overview/core-concepts.md) | 核心概念词汇表 — Agent/Turn/Tool/Skill/MCP 等 20 个概念 |
+| [project-structure.md](05-overview/project-structure.md) | 项目结构导览 — 46 个 internal 包分类地图 |
+
+## 10-19 · 01-dev-read（L3 源码阅读分析）
 
 | 序号 | 文件 | 说明 |
 |------|------|------|
