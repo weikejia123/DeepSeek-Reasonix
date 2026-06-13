@@ -1,9 +1,9 @@
+# Steer Queue — Mid-Turn 消息队列
 <!--
 版本: v1.0
 创建: 2026-06-13 22:10:00
 更新: 2026-06-13 22:10:00
 -->
-# Steer Queue — Mid-Turn 消息队列
 
 **能力类型**: 基础能力  
 **提供方**: Go 后端 Agent (`internal/agent/agent.go`)  

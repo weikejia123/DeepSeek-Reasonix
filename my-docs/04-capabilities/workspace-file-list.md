@@ -1,9 +1,9 @@
+# ListWorkspaceFiles() — 全量工作区文件枚举
 <!--
 版本: v1.0
 创建: 2026-06-13 22:00:00
 更新: 2026-06-13 22:00:00
 -->
-# ListWorkspaceFiles() — 全量工作区文件枚举
 
 **能力类型**: 基础能力  
 **提供方**: Go 后端 (`desktop/app.go`) → 前端 Bridge (`bridge.ts`)  

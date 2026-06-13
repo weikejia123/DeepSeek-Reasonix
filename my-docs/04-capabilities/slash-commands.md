@@ -1,9 +1,9 @@
+# Slash Commands — 指令系统完整参考
 <!--
 版本: v1.0
 创建: 2026-06-13 15:30:00
 更新: 2026-06-13 15:30:00
 -->
-# Slash Commands — 指令系统完整参考
 
 **能力类型**: 基础能力  
 **代码位置**: `internal/control/controller.go:746-882`（submit 路由）、`internal/control/slash.go:337-406`（管理指令）、`internal/cli/chat_tui.go:3476-3612`（TUI 扩展）、`internal/command/command.go`（自定义命令）
