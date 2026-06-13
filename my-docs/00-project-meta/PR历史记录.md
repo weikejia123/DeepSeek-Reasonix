@@ -5,6 +5,7 @@
 | 1 | 2026-06-12 | `fix/mcp-shell-path` | fix: unconditionally enrich shell PATH for MCP stdio subprocesses | Open [#4220](https://github.com/esengine/DeepSeek-Reasonix/pull/4220) |
 | 2 | 2026-06-13 | `feat/file-link-navigation` | feat: workspace file path linkification in assistant messages | Open [#4284](https://github.com/esengine/DeepSeek-Reasonix/pull/4284) |
 | 2.1 | 2026-06-13 | `fix/chinese-path-link` | fix: decodeURIComponent in openRightDockFile to support Chinese filenames | ✅ 已测试通过 |
+| M1 | 2026-06-13 | `wkj-cli` | merge upstream/main-v2 (v1.7.0, 21 commits) → wkj-cli | ✅ 已合并 |
 
 ## 规则
 
@@ -13,3 +14,4 @@
 - 一个分支 = 一个 PR = 一个关注点
 - 二开分支 `wkj-cli` 永不提 PR
 - my-docs 等二开目录不进 PR
+- 上游同步：`git fetch upstream && git merge upstream/main-v2`，仅本地操作
