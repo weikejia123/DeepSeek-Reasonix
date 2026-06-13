@@ -5,6 +5,7 @@
 | 文件 | 说明 |
 |------|------|
 | [pr-history.md](00-project-meta/pr-history.md) | 向上游提交的 PR 历史记录 |
+| [gap-analysis-plan.md](00-project-meta/gap-analysis-plan.md) | 文档缺口分析报告 & L1-L4 补全计划 |
 
 ## 10-19 · 01-dev-read（源码阅读分析）
 
