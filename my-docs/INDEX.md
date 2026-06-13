@@ -24,12 +24,14 @@
 | [系统架构总图.md](06-architecture/系统架构总图.md) | 完整分层图 + 组件交互矩阵 + 关键路径 |
 | [单Turn全链路数据流.md](06-architecture/单Turn全链路数据流.md) | 时序图 + 数据结构变化 + 事件流 |
 | [Skill调用全链路.md](06-architecture/Skill调用全链路.md) | inline/subagent 两条路径 |
+| [Goal模式数据流.md](06-architecture/Goal模式数据流.md) | Goal 全链路 + 最佳实践 + 双模型警告 ← FAQ 归流 |
 
 ## 05-09 · 07-extension-guide（L4 扩展指南）
 
 | 文件 | 说明 |
 |------|------|
 | [开发者扩展指南.md](07-extension-guide/开发者扩展指南.md) | 如何新增 Tool / Skill / MCP / Provider / Hook / Command / Frontend 组件 |
+| [排错指南.md](07-extension-guide/排错指南.md) | 常见问题排错 — 性能/沙箱/模型/Goal/MCP ← FAQ 归流 |
 
 ## 10-19 · 01-dev-read（L3 源码阅读分析）
 
@@ -63,6 +65,8 @@
 | 26 | [26-配置系统.md](01-dev-read/26-配置系统.md) | Config System — reasonix.toml结构、加载优先级 |
 | 27 | [27-前端架构.md](01-dev-read/27-前端架构.md) | Frontend Architecture — React状态管理、Bridge IPC |
 | 28 | [28-沙箱系统.md](01-dev-read/28-沙箱系统.md) | Sandbox — macOS Seatbelt、bash安全隔离 |
+| 29 | [29-Coordinator双模型架构.md](01-dev-read/29-Coordinator双模型架构.md) | Coordinator — planner+executor 双模型协作 ← FAQ 归流 |
+| 30 | [30-Desktop数据模型.md](01-dev-read/30-Desktop数据模型.md) | Desktop UI — Trash/Changes/Referenced 数据模型 ← FAQ 归流 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 
