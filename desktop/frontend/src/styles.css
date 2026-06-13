@@ -4569,6 +4569,9 @@ a[href] {
 
 .composer-modebar--loop[data-active="true"] {
   --composer-modebar-index: 1;
+  --composer-modebar-active-bg: #2563eb;
+  --composer-modebar-active-border: #3b82f6;
+  --composer-modebar-active-fg: #fff;
 }
 
 .composer-modebar__thumb {
