@@ -38,11 +38,11 @@
 
 | 文件 | 说明 |
 |------|------|
-| [chat-file-link-navigation.md](03-feature-action/chat-file-link-navigation.md) | 对话文件链接导航 — 设计草案 → 实施实录 |
-| [chat-file-link-navigation-regression.md](03-feature-action/chat-file-link-navigation-regression.md) | 文件链接导航 — 回归影响分析 |
-| [git-branch-display-bug.md](03-feature-action/git-branch-display-bug.md) | 顶部 git 分支显示 bug 分析 |
-| [hope-command-design.md](03-feature-action/hope-command-design.md) | Hope 指令功能设计草案 |
-| [message-send-queue-design.md](03-feature-action/message-send-queue-design.md) | 消息发送队列设计草案 |
+| [chat-file-link-navigation.md](03-feature-action/20260613-chat-file-link-navigation.md) | 对话文件链接导航 — 设计草案 → 实施实录 |
+| [chat-file-link-navigation-regression.md](03-feature-action/20260613-chat-file-link-navigation-regression.md) | 文件链接导航 — 回归影响分析 |
+| [git-branch-display-bug.md](03-feature-action/20260613-git-branch-display-bug.md) | 顶部 git 分支显示 bug 分析 |
+| [hope-command-design.md](03-feature-action/20260613-hope-command-design.md) | Hope 指令功能设计草案 |
+| [message-send-queue-design.md](03-feature-action/20260613-message-send-queue-design.md) | 消息发送队列设计草案 |
 
 ## 40-49 · 04-capabilities（基础能力清单）
 
