@@ -34,6 +34,10 @@
 | 22 | [22-evidence-todo.md](01-dev-read/22-evidence-todo.md) | Evidence & Todo — complete_step验证、task list状态机 |
 | 23 | [23-checkpoint-rewind.md](01-dev-read/23-checkpoint-rewind.md) | Checkpoint & Rewind — 每turn快照、code/conversation回退 |
 | 24 | [24-auto-plan.md](01-dev-read/24-auto-plan.md) | Auto-Plan — 分类器评分、自动触发plan模式 |
+| 25 | [25-event-system.md](01-dev-read/25-event-system.md) | Event System — 19种事件、Sink接口、多Tab路由 |
+| 26 | [26-config-system.md](01-dev-read/26-config-system.md) | Config System — reasonix.toml结构、加载优先级 |
+| 27 | [27-frontend-architecture.md](01-dev-read/27-frontend-architecture.md) | Frontend Architecture — React状态管理、Bridge IPC |
+| 28 | [28-sandbox.md](01-dev-read/28-sandbox.md) | Sandbox — macOS Seatbelt、bash安全隔离 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 
