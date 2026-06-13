@@ -34,6 +34,7 @@ import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
+import { FileLinkContext, buildFileSetFromList, type FileLinkAPI } from "./lib/pathLinkify";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
@@ -849,6 +850,20 @@ export default function App() {
     });
     return () => { cancelled = true; };
   }, [dockRefreshKey]);
+
+  // ── Workspace file set for path linkification ────────────────────────────
+  const [workspaceFileSet, setWorkspaceFileSet] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    app.ListWorkspaceFiles().then((files) => {
+      if (cancelled) return;
+      setWorkspaceFileSet(buildFileSetFromList(files));
+    }).catch(() => {
+      if (!cancelled) setWorkspaceFileSet(new Set());
+    });
+    return () => { cancelled = true; };
+  }, [projectRevision, dockRefreshKey]);
 
   const [desktopPlatform, setDesktopPlatform] = useState<DesktopPlatform>(detectBrowserPlatform);
   const [statusBarStyle, setStatusBarStyle] = useState<"icon" | "text">("text");
@@ -1799,6 +1814,11 @@ export default function App() {
     [openWorkspacePanel],
   );
 
+  const fileLinkCtx = useMemo<FileLinkAPI | null>(() => {
+    if (workspaceFileSet.size === 0) return null;
+    return { filePathSet: workspaceFileSet, onOpenWorkspaceFile: openRightDockFile };
+  }, [workspaceFileSet, openRightDockFile]);
+
   const openRightDockChangeFile = useCallback(
     (path: string) => {
       const nextPath = path.trim();
@@ -2691,6 +2711,7 @@ export default function App() {
                 <span className="loading-screen__text">{t("common.loading")}</span>
               </div>
             ) : (
+              <FileLinkContext.Provider value={fileLinkCtx}>
               <Transcript
                 items={displayItems}
                 live={state.live}
@@ -2702,6 +2723,7 @@ export default function App() {
                 rewindDisabled={state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
                 rewindSignal={rewindSignal}
               />
+              </FileLinkContext.Provider>
             )}
           </main>
 

@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useLayoutEffect, useRef } from "react";
+import { memo, useContext, useDeferredValue, useLayoutEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,6 +8,7 @@ import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
 import { normalizeMath } from "./mathNormalize";
 import { openExternal } from "../lib/bridge";
+import { FileLinkContext, linkifyPaths } from "../lib/pathLinkify";
 
 // Markdown rendering via react-markdown + remark-gfm (tables, task lists,
 // strike, autolinks) and remark-math + rehype-katex for $/$$ KaTeX math.
@@ -69,36 +70,60 @@ function removeStreamingCursor(container: HTMLElement): void {
     .forEach((el) => el.remove());
 }
 
-const components: Components = {
-  pre: ({ children }) => <>{children}</>,
-  code: ({ className, children }) => {
-    const text = String(children ?? "");
-    const match = /language-([\w-]+)/.exec(className ?? "");
-    const isBlock = match !== null || text.includes("\n");
-    if (isBlock) {
-      return <CodeViewer value={text.replace(/\n$/, "")} language={match?.[1]} maxHeight={360} />;
-    }
-    return <code className="md-code">{children}</code>;
-  },
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      onClick={(e) => {
-        e.preventDefault();
-        if (href) openExternal(href);
-      }}
-      onAuxClick={(e) => {
-        e.preventDefault();
-        if (href) openExternal(href);
-      }}
-      onMouseDown={(e) => {
-        if (e.button === 1) e.preventDefault();
-      }}
-    >
-      {children}
-    </a>
-  ),
-};
+function buildComponents(onOpenWorkspaceFile?: (path: string) => void): Components {
+  return {
+    pre: ({ children }) => <>{children}</>,
+    code: ({ className, children }) => {
+      const text = String(children ?? "");
+      const match = /language-([\w-]+)/.exec(className ?? "");
+      const isBlock = match !== null || text.includes("\n");
+      if (isBlock) {
+        return <CodeViewer value={text.replace(/\n$/, "")} language={match?.[1]} maxHeight={360} />;
+      }
+      return <code className="md-code">{children}</code>;
+    },
+    a: ({ href, children }) => {
+      // Workspace file path: no protocol prefix, relative to project root.
+      if (href && !/^https?:\/\//.test(href)) {
+        return (
+          <a
+            href="#"
+            className="md-link--workspace"
+            onClick={(e) => {
+              e.preventDefault();
+              // react-markdown percent-encodes non-ASCII chars in link hrefs;
+              // decode them so the path matches what the file tree produces.
+              let decoded = href;
+              try { decoded = decodeURIComponent(href); } catch { /* use as-is */ }
+              onOpenWorkspaceFile?.(decoded);
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+      // External link: open in system browser.
+      return (
+        <a
+          href={href}
+          onClick={(e) => {
+            e.preventDefault();
+            if (href) openExternal(href);
+          }}
+          onAuxClick={(e) => {
+            e.preventDefault();
+            if (href) openExternal(href);
+          }}
+          onMouseDown={(e) => {
+            if (e.button === 1) e.preventDefault();
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
+  };
+}
 
 export const Markdown = memo(function Markdown({
   text,
@@ -107,7 +132,20 @@ export const Markdown = memo(function Markdown({
   text: string;
   showCursor?: boolean;
 }) {
-  const deferred = useDeferredValue(text);
+  const ctx = useContext(FileLinkContext);
+
+  // Linkify file paths only after streaming completes.
+  const linkedText = useMemo(() => {
+    if (showCursor || !ctx?.filePathSet) return text;
+    return linkifyPaths(text, ctx.filePathSet);
+  }, [text, showCursor, ctx?.filePathSet]);
+
+  const components = useMemo(
+    () => buildComponents(ctx?.onOpenWorkspaceFile),
+    [ctx?.onOpenWorkspaceFile],
+  );
+
+  const deferred = useDeferredValue(linkedText);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Inject / remove cursor after every React render cycle so the cursor
