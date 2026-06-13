@@ -4,31 +4,31 @@
 
 | 文件 | 说明 |
 |------|------|
-| [pr-history.md](00-project-meta/pr-history.md) | 向上游提交的 PR 历史记录 |
-| [gap-analysis-plan.md](00-project-meta/gap-analysis-plan.md) | 文档缺口分析报告 & L1-L4 补全计划 |
+| [PR历史记录.md](00-project-meta/PR历史记录.md) | 向上游提交的 PR 历史记录 |
+| [文档缺口分析与L1-L4补全计划.md](00-project-meta/文档缺口分析与L1-L4补全计划.md) | 文档缺口分析报告 & L1-L4 补全计划 |
 
 ## 05-09 · 05-overview（L1 快速上手）
 
 | 文件 | 说明 |
 |------|------|
-| [what-is-reasonix.md](05-overview/what-is-reasonix.md) | Reasonix 是什么 — 项目定位、设计哲学、三前端架构 |
-| [quick-start.md](05-overview/quick-start.md) | 快速上手 — 安装→配置→第一条消息→核心交互 |
-| [core-concepts.md](05-overview/core-concepts.md) | 核心概念词汇表 — Agent/Turn/Tool/Skill/MCP 等 20 个概念 |
-| [project-structure.md](05-overview/project-structure.md) | 项目结构导览 — 46 个 internal 包分类地图 |
+| [Reasonix是什么.md](05-overview/Reasonix是什么.md) | 项目定位、设计哲学、三前端架构 |
+| [快速上手.md](05-overview/快速上手.md) | 安装→配置→第一条消息→核心交互 |
+| [核心概念词汇表.md](05-overview/核心概念词汇表.md) | Agent/Turn/Tool/Skill/MCP 等 20 个概念 |
+| [项目结构导览.md](05-overview/项目结构导览.md) | 46 个 internal 包分类地图 |
 
 ## 05-09 · 06-architecture（L2 系统架构）
 
 | 文件 | 说明 |
 |------|------|
-| [system-architecture.md](06-architecture/system-architecture.md) | 系统架构总图 — 完整分层图 + 组件交互矩阵 + 关键路径 |
-| [data-flow-turn.md](06-architecture/data-flow-turn.md) | 单 Turn 全链路 — 时序图 + 数据结构变化 + 事件流 |
-| [data-flow-skill.md](06-architecture/data-flow-skill.md) | Skill 调用全链路 — inline/subagent 两条路径 |
+| [系统架构总图.md](06-architecture/系统架构总图.md) | 完整分层图 + 组件交互矩阵 + 关键路径 |
+| [单Turn全链路数据流.md](06-architecture/单Turn全链路数据流.md) | 时序图 + 数据结构变化 + 事件流 |
+| [Skill调用全链路.md](06-architecture/Skill调用全链路.md) | inline/subagent 两条路径 |
 
 ## 05-09 · 07-extension-guide（L4 扩展指南）
 
 | 文件 | 说明 |
 |------|------|
-| [extension-guide.md](07-extension-guide/extension-guide.md) | 扩展指南合集 — 如何新增 Tool / Skill / MCP / Provider / Hook / Command / Frontend 组件 |
+| [开发者扩展指南.md](07-extension-guide/开发者扩展指南.md) | 如何新增 Tool / Skill / MCP / Provider / Hook / Command / Frontend 组件 |
 
 ## 10-19 · 01-dev-read（L3 源码阅读分析）
 
@@ -38,39 +38,39 @@
 | 02 | [02-Loop模式深度分析.md](01-dev-read/02-Loop模式深度分析.md) | `/loop` 指令的实现机制与生命周期 |
 | 03 | [03-TUI功能深度分析报告.md](01-dev-read/03-TUI功能深度分析报告.md) | TUI 的渲染、事件、交互完整分析 |
 | 04 | [04-Desktop会话持久化分析.md](01-dev-read/04-Desktop会话持久化分析.md) | Desktop 端会话存储、恢复、autosave 机制 |
-| 05 | [05-loop-lifecycle.md](01-dev-read/05-loop-lifecycle.md) | Loop 模式生命周期追踪记录 |
-| 06 | [06-agent-capability-assessment.md](01-dev-read/06-agent-capability-assessment.md) | Agent 能力评估报告 |
-| 07 | [07-vs-claude-code-codex-analysis.md](01-dev-read/07-vs-claude-code-codex-analysis.md) | 与 Claude Code / Codex 的对比分析 |
-| 08 | [08-three-modes-analysis.md](01-dev-read/08-three-modes-analysis.md) | Normal / Plan / Goal 三种模式的对比分析 |
-| 09 | [09-tool-system.md](01-dev-read/09-tool-system.md) | Tool System — 工具注册、分发、执行 + 全量工具目录 |
-| 10 | [10-agent-core-loop.md](01-dev-read/10-agent-core-loop.md) | Agent Core Loop — Run 完整循环 + 六道防护机制 |
-| 11 | [11-skill-system.md](01-dev-read/11-skill-system.md) | Skill System — 发现、加载、inline/subagent 执行 |
-| 12 | [12-mcp-system.md](01-dev-read/12-mcp-system.md) | MCP System — 插件连接、传输与工具代理 |
-| 13 | [13-context-compaction.md](01-dev-read/13-context-compaction.md) | Context & Compaction — 上下文管理与三阈值压缩 |
-| 14 | [14-hook-system.md](01-dev-read/14-hook-system.md) | Hook System — 10 事件点 + 阻塞/非阻塞扩展 |
-| 15 | [15-boot-sequence.md](01-dev-read/15-boot-sequence.md) | Boot Sequence — Build() 从零到就绪的完整启动流程 |
-| 16 | [16-session-persistence.md](01-dev-read/16-session-persistence.md) | Session & Persistence — 会话生命周期、JSONL持久化、检查点 |
-| 17 | [17-provider-system.md](01-dev-read/17-provider-system.md) | Provider System — LLM调用、流式、多提供商、前缀缓存 |
-| 18 | [18-subagent-task.md](01-dev-read/18-subagent-task.md) | Subagent/Task — 子代理隔离、FilterRegistry、continuation |
-| 19 | [19-memory-system.md](01-dev-read/19-memory-system.md) | Memory System — 层级加载、四种类型、REASONIX.md |
-| 20 | [20-plan-mode.md](01-dev-read/20-plan-mode.md) | Plan Mode — 双轮规划→批准→执行架构 |
-| 21 | [21-approval-gate.md](01-dev-read/21-approval-gate.md) | Approval & Gate — 三层权限、YOLO、SessionGrant |
-| 22 | [22-evidence-todo.md](01-dev-read/22-evidence-todo.md) | Evidence & Todo — complete_step验证、task list状态机 |
-| 23 | [23-checkpoint-rewind.md](01-dev-read/23-checkpoint-rewind.md) | Checkpoint & Rewind — 每turn快照、code/conversation回退 |
-| 24 | [24-auto-plan.md](01-dev-read/24-auto-plan.md) | Auto-Plan — 分类器评分、自动触发plan模式 |
-| 25 | [25-event-system.md](01-dev-read/25-event-system.md) | Event System — 19种事件、Sink接口、多Tab路由 |
-| 26 | [26-config-system.md](01-dev-read/26-config-system.md) | Config System — reasonix.toml结构、加载优先级 |
-| 27 | [27-frontend-architecture.md](01-dev-read/27-frontend-architecture.md) | Frontend Architecture — React状态管理、Bridge IPC |
-| 28 | [28-sandbox.md](01-dev-read/28-sandbox.md) | Sandbox — macOS Seatbelt、bash安全隔离 |
+| 05 | [05-Loop生命周期追踪.md](01-dev-read/05-Loop生命周期追踪.md) | Loop 模式生命周期追踪记录 |
+| 06 | [06-Agent能力评估报告.md](01-dev-read/06-Agent能力评估报告.md) | Agent 能力评估报告 |
+| 07 | [07-与ClaudeCode-Codex对比分析.md](01-dev-read/07-与ClaudeCode-Codex对比分析.md) | 与 Claude Code / Codex 的对比分析 |
+| 08 | [08-三种调用模式分析.md](01-dev-read/08-三种调用模式分析.md) | Normal / Plan / Goal 三种模式的对比分析 |
+| 09 | [09-工具系统.md](01-dev-read/09-工具系统.md) | Tool System — 工具注册、分发、执行 + 全量工具目录 |
+| 10 | [10-Agent核心循环.md](01-dev-read/10-Agent核心循环.md) | Agent Core Loop — Run 完整循环 + 六道防护机制 |
+| 11 | [11-Skill系统.md](01-dev-read/11-Skill系统.md) | Skill System — 发现、加载、inline/subagent 执行 |
+| 12 | [12-MCP系统.md](01-dev-read/12-MCP系统.md) | MCP System — 插件连接、传输与工具代理 |
+| 13 | [13-上下文管理与压缩.md](01-dev-read/13-上下文管理与压缩.md) | Context & Compaction — 上下文管理与三阈值压缩 |
+| 14 | [14-Hook系统.md](01-dev-read/14-Hook系统.md) | Hook System — 10 事件点 + 阻塞/非阻塞扩展 |
+| 15 | [15-启动流程.md](01-dev-read/15-启动流程.md) | Boot Sequence — Build() 从零到就绪的完整启动流程 |
+| 16 | [16-会话持久化.md](01-dev-read/16-会话持久化.md) | Session & Persistence — 会话生命周期、JSONL持久化、检查点 |
+| 17 | [17-Provider系统.md](01-dev-read/17-Provider系统.md) | Provider System — LLM调用、流式、多提供商、前缀缓存 |
+| 18 | [18-子代理系统.md](01-dev-read/18-子代理系统.md) | Subagent/Task — 子代理隔离、FilterRegistry、continuation |
+| 19 | [19-记忆系统.md](01-dev-read/19-记忆系统.md) | Memory System — 层级加载、四种类型、REASONIX.md |
+| 20 | [20-Plan模式.md](01-dev-read/20-Plan模式.md) | Plan Mode — 双轮规划→批准→执行架构 |
+| 21 | [21-权限门控.md](01-dev-read/21-权限门控.md) | Approval & Gate — 三层权限、YOLO、SessionGrant |
+| 22 | [22-证据与任务.md](01-dev-read/22-证据与任务.md) | Evidence & Todo — complete_step验证、task list状态机 |
+| 23 | [23-检查点与回退.md](01-dev-read/23-检查点与回退.md) | Checkpoint & Rewind — 每turn快照、code/conversation回退 |
+| 24 | [24-自动规划.md](01-dev-read/24-自动规划.md) | Auto-Plan — 分类器评分、自动触发plan模式 |
+| 25 | [25-事件系统.md](01-dev-read/25-事件系统.md) | Event System — 19种事件、Sink接口、多Tab路由 |
+| 26 | [26-配置系统.md](01-dev-read/26-配置系统.md) | Config System — reasonix.toml结构、加载优先级 |
+| 27 | [27-前端架构.md](01-dev-read/27-前端架构.md) | Frontend Architecture — React状态管理、Bridge IPC |
+| 28 | [28-沙箱系统.md](01-dev-read/28-沙箱系统.md) | Sandbox — macOS Seatbelt、bash安全隔离 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 
 | 文件 | 说明 |
 |------|------|
-| [branch-switching-mechanism.md](02-dev-faq/branch-switching-mechanism.md) | 分叉会话的切换机制、cpBound 判定逻辑 |
-| [desktop-ui-panels-questions.md](02-dev-faq/desktop-ui-panels-questions.md) | Desktop UI 面板相关 FAQ（项目树、变更、依赖文件、Goal 模式等） |
-| [goal-mode-comprehensive.md](02-dev-faq/goal-mode-comprehensive.md) | Goal 模式完整分析（机制、风险、反面案例、单双模型对比） |
-| [planner-role-tool-limits.md](02-dev-faq/planner-role-tool-limits.md) | Planner 角色与工具限制说明 |
+| [分支切换机制.md](02-dev-faq/分支切换机制.md) | 分叉会话的切换机制、cpBound 判定逻辑 |
+| [Desktop-UI面板FAQ.md](02-dev-faq/Desktop-UI面板FAQ.md) | Desktop UI 面板相关 FAQ（项目树、变更、依赖文件、Goal 模式等） |
+| [Goal模式完整分析.md](02-dev-faq/Goal模式完整分析.md) | Goal 模式完整分析（机制、风险、反面案例、单双模型对比） |
+| [Planner角色与工具限制.md](02-dev-faq/Planner角色与工具限制.md) | Planner 角色与工具限制说明 |
 
 ### 诊断记录
 
@@ -82,17 +82,17 @@
 
 | 文件 | 说明 |
 |------|------|
-| [chat-file-link-navigation.md](03-feature-action/20260613-chat-file-link-navigation.md) | 对话文件链接导航 — 设计草案 → 实施实录 |
-| [chat-file-link-navigation-regression.md](03-feature-action/20260613-chat-file-link-navigation-regression.md) | 文件链接导航 — 回归影响分析 |
-| [git-branch-display-bug.md](03-feature-action/20260613-git-branch-display-bug.md) | 顶部 git 分支显示 bug 分析 |
-| [hope-command-design.md](03-feature-action/20260613-hope-command-design.md) | Hope 指令功能设计草案 |
+| [20260613-对话文件链接导航.md](03-feature-action/20260613-对话文件链接导航.md) | 对话文件链接导航 — 设计草案 → 实施实录 |
+| [20260613-文件链接导航回归分析.md](03-feature-action/20260613-文件链接导航回归分析.md) | 文件链接导航 — 回归影响分析 |
+| [20260613-Git分支显示Bug分析.md](03-feature-action/20260613-Git分支显示Bug分析.md) | 顶部 git 分支显示 bug 分析 |
+| [20260613-Hope指令设计草案.md](03-feature-action/20260613-Hope指令设计草案.md) | Hope 指令功能设计草案 |
 
 ## 40-49 · 04-capabilities（基础能力清单）
 
 | 文件 | 说明 |
 |------|------|
-| [workspace-file-list.md](04-capabilities/workspace-file-list.md) | `ListWorkspaceFiles()` — 全量工作区文件枚举 |
-| [steer-queue.md](04-capabilities/steer-queue.md) | `steerQueue` — Mid-Turn 消息队列机制与功能边界 |
-| [slash-commands.md](04-capabilities/slash-commands.md) | 指令系统完整参考 — 全部内置/管理/TUI/自定义指令的解读与场景 |
+| [工作区文件枚举.md](04-capabilities/工作区文件枚举.md) | `ListWorkspaceFiles()` — 全量工作区文件枚举 |
+| [Steer队列机制.md](04-capabilities/Steer队列机制.md) | `steerQueue` — Mid-Turn 消息队列机制与功能边界 |
+| [指令系统完整参考.md](04-capabilities/指令系统完整参考.md) | 全部内置/管理/TUI/自定义指令的解读与场景 |
 
 > 按需补充：`SwitchBranch()`、Markdown `<a>` 拦截等可复用能力。
