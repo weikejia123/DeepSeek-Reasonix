@@ -42,8 +42,12 @@
 | [chat-file-link-navigation-regression.md](03-feature-action/20260613-chat-file-link-navigation-regression.md) | 文件链接导航 — 回归影响分析 |
 | [git-branch-display-bug.md](03-feature-action/20260613-git-branch-display-bug.md) | 顶部 git 分支显示 bug 分析 |
 | [hope-command-design.md](03-feature-action/20260613-hope-command-design.md) | Hope 指令功能设计草案 |
-| [message-send-queue-design.md](03-feature-action/20260613-message-send-queue-design.md) | 消息发送队列设计草案 |
 
 ## 40-49 · 04-capabilities（基础能力清单）
 
-> 待补充：`ListWorkspaceFiles()`、`SwitchBranch()`、Markdown `<a>` 拦截等可复用能力。
+| 文件 | 说明 |
+|------|------|
+| [workspace-file-list.md](04-capabilities/workspace-file-list.md) | `ListWorkspaceFiles()` — 全量工作区文件枚举 |
+| [steer-queue.md](04-capabilities/steer-queue.md) | `steerQueue` — Mid-Turn 消息队列机制与功能边界 |
+
+> 按需补充：`SwitchBranch()`、Markdown `<a>` 拦截等可复用能力。
