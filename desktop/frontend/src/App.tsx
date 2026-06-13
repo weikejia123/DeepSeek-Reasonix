@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
+import { Flip } from "gsap/Flip";
+import { ScrollToPlugin } from "gsap/ScrollToPlugin";
+gsap.registerPlugin(useGSAP, Flip, ScrollToPlugin);
 import {
   Activity,
   Command,
@@ -34,6 +39,7 @@ import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
+import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { StatusBar } from "./components/StatusBar";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -860,7 +866,6 @@ export default function App() {
   }, [projectRevision, dockRefreshKey]);
 
   const [desktopPlatform, setDesktopPlatform] = useState<DesktopPlatform>(detectBrowserPlatform);
-  const [expandThinking, setExpandThinking] = useState(false);
   const [statusBarStyle, setStatusBarStyle] = useState<"icon" | "text">("text");
   const [statusBarItems, setStatusBarItems] = useState<StatusBarItemId[]>(() => [...DEFAULT_STATUS_BAR_ITEMS]);
   const [renamingTopicId, setRenamingTopicId] = useState<string | null>(null);
@@ -1011,7 +1016,6 @@ export default function App() {
       const settings = await app.Settings();
       if (cancelled) return;
       applyDesktopPreferences(settings);
-      setExpandThinking(settings.expandThinking);
       hydrateDisplayMode(settings.displayMode);
       setSidebarImConnections(sidebarImConnectionsFromBot(settings.bot, t));
       setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
@@ -1054,6 +1058,7 @@ export default function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
   const [pendingPlanRevision, setPendingPlanRevision] = useState<string | null>(null);
   const [footerHeight, setFooterHeight] = useState(0);
   const footerHeightRef = useRef(0);
@@ -1269,7 +1274,7 @@ export default function App() {
       const trimmed = nextGoal.trim();
       if (!trimmed) return;
       applyGoal(trimmed);
-      send(trimmed, `/goal ${trimmed}`);
+      commitThenSend(trimmed, `/goal ${trimmed}`);
     },
     [applyGoal, send],
   );
@@ -1377,7 +1382,7 @@ export default function App() {
     if (!pendingPlanRevision || state.running) return;
     const text = pendingPlanRevision;
     setPendingPlanRevision(null);
-    send(text);
+    commitThenSend(text);
   }, [pendingPlanRevision, send, state.running]);
 
   useEffect(() => {
@@ -1446,12 +1451,12 @@ export default function App() {
         } else if (["clear", "off", "stop", "done"].includes(arg.toLowerCase())) {
           applyGoal("");
         }
-        send(trimmed, submitText.trim());
+        commitThenSend(trimmed, submitText.trim());
         return;
       }
       if (collaborationMode === "goal" && !goal.trim()) {
         applyGoal(trimmed);
-        send(trimmed, `/goal ${submitText.trim()}`);
+        commitThenSend(trimmed, `/goal ${submitText.trim()}`);
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -1484,7 +1489,7 @@ export default function App() {
       await setControllerCollaborationMode(controllerComposerProfileCollaborationMode(composerProfile));
       await setControllerToolApprovalMode(toolApprovalMode);
       if (goal.trim()) await setControllerGoal(goal);
-      send(trimmed, submitText.trim());
+      commitThenSend(trimmed, submitText.trim());
     },
     [applyGoal, closeTransientOverlays, collaborationMode, composerProfile, goal, send, runShell, notice, setControllerCollaborationMode, setControllerGoal, setControllerToolApprovalMode, steer, switchModel, t, toolApprovalMode],
   );
@@ -1942,19 +1947,105 @@ export default function App() {
     await openBlankSession(target.scope, target.workspaceRoot);
   }, [blankSessionTarget, closeTransientOverlays, openBlankSession]);
 
-  const handleMessageAction = useCallback(async (turn: number, scope: string) => {
-    await rewind(turn, scope);
+  const [rewindSignal, setRewindSignal] = useState(0);
+
+  // ── Optimistic rewind ─────────────────────────────────────────────────
+  // Rewind is optimistic: the UI immediately truncates, scrolls to the
+  // target, fills the composer, and shows an undo banner.  The real Go
+  // Rewind is deferred until the user SENDS a new message.  Undo simply
+  // restores the full items list — no Go call needed.
+  type RewindState = {
+    turn: number;
+    scope: string;
+    fullItems: Item[];     // pre-truncation items (for undo)
+    boundaryIdx: number;   // first item index of the rewound-to turn
+    turnDiff: number;      // turns rolled back
+    prompt: string;        // user message text for composer fill
+  };
+  const [rewindState, setRewindState] = useState<RewindState | null>(null);
+  const rewindStateRef = useRef(rewindState);
+  rewindStateRef.current = rewindState;
+
+  // Display items: truncated when an optimistic rewind is pending.
+  const displayItems = useMemo(() => {
+    if (!rewindState) return state.items;
+    return state.items.slice(0, rewindState.boundaryIdx);
+  }, [state.items, rewindState]);
+
+  // send wrapper: commits any pending optimistic rewind before sending.
+  const commitThenSend = useCallback(async (displayText: string, submitText?: string) => {
+    const rs = rewindStateRef.current;
+    if (rs) {
+      setRewindState(null);
+      try {
+        await rewind(rs.turn, rs.scope);
+        setRewindSignal((v) => v + 1);
+        if (rs.scope === "both") {
+          // Code was only reverted now (deferred), so refresh the dock here.
+          setDockRefreshKey((v) => v + 1);
+          setProjectRevision((v) => v + 1);
+        }
+      } catch {
+        // Rewind failed: the Go conversation is intact, so the cleared
+        // optimistic state already shows the full transcript. Don't send —
+        // the controller emits a notice with the reason.
+        return;
+      }
+    }
+    send(displayText, submitText);
+  }, [send, rewind]);
+
+  const handleMessageAction = useCallback((turn: number, scope: string) => {
     if (scope === "fork") {
-      await refreshTabMetas();
-      setProjectRevision((value) => value + 1);
-      setTabRevealSignal((signal) => signal + 1);
+      // Fork still goes through the controller (not optimistic).
+      rewind(turn, scope).then(() => {
+        refreshTabMetas();
+        setProjectRevision((v) => v + 1);
+        setTabRevealSignal((v) => v + 1);
+      });
       return;
     }
-    if (scope === "code" || scope === "both") {
-      setDockRefreshKey((value) => value + 1);
-      setProjectRevision((value) => value + 1);
+
+    // Code-only rewind only affects files — no message truncation,
+    // no optimistic UI needed.  Execute immediately.
+    if (scope === "code") {
+      rewind(turn, scope);
+      setDockRefreshKey((v) => v + 1);
+      setProjectRevision((v) => v + 1);
+      return;
     }
-  }, [refreshTabMetas, rewind]);
+
+    const items = state.items;
+    // Find the boundary: index of the Nth user message where N = turn.
+    let boundaryIdx = 0;
+    let userCount = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === "user") {
+        if (userCount === turn) { boundaryIdx = i; break; }
+        userCount++;
+      }
+    }
+
+    const prevUserCount = items.filter((it) => it.kind === "user").length;
+    const turnDiff = prevUserCount - userCount;
+
+    // Save full items for undo.
+    const userItem = items[boundaryIdx]?.kind === "user" ? items[boundaryIdx] as Extract<Item, { kind: "user" }> : undefined;
+    setRewindState({
+      turn,
+      scope,
+      fullItems: items,
+      boundaryIdx,
+      turnDiff,
+      prompt: userItem?.text ?? "",
+    });
+
+    // Fill composer with the rewound-to user message.
+    const insertId = Date.now();
+    setComposerInsertRequest({ id: insertId, text: userItem?.text ?? "" });
+
+    setRewindSignal((v) => v + 1);
+  }, [state.items, rewind, refreshTabMetas, setComposerInsertRequest]);
 
   const handleOpenTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string) => {
     closeTransientOverlays();
@@ -2616,10 +2707,10 @@ export default function App() {
               </div>
             ) : (
               <Transcript
-                items={state.items}
+                items={displayItems}
                 live={state.live}
                 footerHeight={footerHeight}
-                onPrompt={send}
+                onPrompt={commitThenSend}
                 onRewind={handleMessageAction}
                 checkpoints={state.checkpoints}
                 actionPending={state.messageAction != null}
@@ -2627,6 +2718,7 @@ export default function App() {
                 defaultExpandThinking={expandThinking}
                 filePathSet={workspaceFileSet}
                 onOpenWorkspaceFile={openRightDockFile}
+                rewindSignal={rewindSignal}
               />
             )}
           </main>
@@ -2634,8 +2726,22 @@ export default function App() {
           {!sidebarImDetailConnection && (
           <footer className="footer" ref={footerRef}>
             {showTodos && <TodoPanel todos={todos} onDismiss={() => setDismissedTodo(todoItem!.id)} />}
+            {rewindState && (
+              <UndoRewindBanner
+                meta={{
+                  turns: rewindState.turnDiff,
+                  filesRestored: [], // optimistic: files haven't changed yet
+                  filesRemoved: [],
+                  onUndo: () => {
+                    setRewindState(null);
+                    setComposerInsertRequest({ id: Date.now(), text: "" });
+                  },
+                }}
+              />
+            )}
             {state.approval && (
               <ApprovalModal
+                key={state.approval.id}
                 approval={state.approval}
                 onAnswer={(allow, session, persist) => {
                   // Approving an exit_plan_mode plan leaves plan mode; sync the

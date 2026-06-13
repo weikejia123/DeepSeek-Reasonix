@@ -460,10 +460,11 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		Active:            active,
 		Cwd:               tab.WorkspaceRoot,
 	}
-	if tab.Scope == "global" {
+	switch tab.Scope {
+	case "global":
 		m.ProjectColor = globalProjectColor()
 		m.WorkspaceName = globalProjectTitle()
-	} else if tab.Scope == "project" {
+	case "project":
 		m.ProjectColor = projectColor(tab.WorkspaceRoot)
 	}
 	if tab.Ctrl != nil {
@@ -949,24 +950,26 @@ func (a *App) buildTabController(tab *WorkspaceTab) {
 
 	sessionDir := desktopSessionDir(root)
 	topicID := strings.TrimSpace(tab.TopicID)
-	if tab.Scope == "global" {
-		migratedTopics := migrateLegacySessionsIntoGlobalTopics(config.SessionDir())
-		if len(migratedTopics) > 0 {
-			a.emitProjectTreeChanged()
+
+	// Assign Global topics to legacy sessions in the global session dir so
+	// imported history appears in the project tree regardless of which tab
+	// triggered the build (the migration now sends everything to global).
+	migratedGlobalTopics := migrateLegacySessionsIntoGlobalTopics(config.SessionDir())
+	if len(migratedGlobalTopics) > 0 {
+		a.emitProjectTreeChanged()
+	}
+	if tab.Scope == "global" && topicID == "" && len(migratedGlobalTopics) > 0 {
+		topicID = migratedGlobalTopics[0]
+		topicTitle := topicTitleForTab("global", "", topicID)
+		a.mu.Lock()
+		if strings.TrimSpace(tab.TopicID) == "" {
+			tab.TopicID = topicID
+			tab.TopicTitle = topicTitle
+			a.saveTabsLocked()
+		} else {
+			topicID = strings.TrimSpace(tab.TopicID)
 		}
-		if topicID == "" && len(migratedTopics) > 0 {
-			topicID = migratedTopics[0]
-			topicTitle := topicTitleForTab("global", "", topicID)
-			a.mu.Lock()
-			if strings.TrimSpace(tab.TopicID) == "" {
-				tab.TopicID = topicID
-				tab.TopicTitle = topicTitle
-				a.saveTabsLocked()
-			} else {
-				topicID = strings.TrimSpace(tab.TopicID)
-			}
-			a.mu.Unlock()
-		}
+		a.mu.Unlock()
 	}
 	if topicID != "" {
 		if _, dir := a.findKnownTopicSession(topicID); dir != "" {
@@ -1128,50 +1131,6 @@ func (a *App) ctrlByTabID(tabID string) *control.Controller {
 	return tab.Ctrl
 }
 
-// activeSink returns the active tab's event sink, or nil.
-func (a *App) activeSink() *tabEventSink {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	t := a.activeTabLocked()
-	if t == nil {
-		return nil
-	}
-	return t.sink
-}
-
-// activeModel returns the active tab's model ref.
-func (a *App) activeModel() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	t := a.activeTabLocked()
-	if t == nil {
-		return ""
-	}
-	return t.model
-}
-
-// activeDisabledMCP returns the active tab's disabled MCP map.
-func (a *App) activeDisabledMCP() map[string]ServerView {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	t := a.activeTabLocked()
-	if t == nil {
-		return map[string]ServerView{}
-	}
-	return t.disabledMCP
-}
-
-// activeMCPOrder returns the active tab's MCP order.
-func (a *App) activeMCPOrder() []string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	t := a.activeTabLocked()
-	if t == nil {
-		return nil
-	}
-	return t.mcpOrder
-}
-
 // --- autosave per tab -------------------------------------------------------
 
 func (a *App) scheduleTabSnapshot(tabID string) {
@@ -1272,7 +1231,7 @@ func topicTitleFromSession(path string) string {
 			return ""
 		}
 		if msg.Role == "user" {
-			return topicTitleFromText(agent.HandoffTask(msg.Content))
+			return topicTitleFromText(control.StripComposePrefixes(agent.HandoffTask(msg.Content)))
 		}
 	}
 }
@@ -1349,7 +1308,7 @@ func desktopConfigDir() string {
 
 func (a *App) saveTabsLocked() {
 	dir := desktopConfigDir()
-	os.MkdirAll(dir, 0o755)
+	_ = os.MkdirAll(dir, 0o755)
 	var entries []desktopTabEntry
 	for _, id := range a.orderedTabIDsLocked() {
 		if tab := a.tabs[id]; tab != nil {
@@ -1372,7 +1331,7 @@ func (a *App) saveTabsLocked() {
 	b, _ := json.MarshalIndent(f, "", "  ")
 	path := filepath.Join(dir, tabsFileName)
 	tmp := path + ".tmp"
-	os.WriteFile(tmp, b, 0o644)
+	_ = os.WriteFile(tmp, b, 0o644)
 	_ = fileutil.ReplaceFile(tmp, path)
 }
 
@@ -1416,7 +1375,7 @@ func loadTabsFile() desktopTabsFile {
 		return desktopTabsFile{}
 	}
 	var f desktopTabsFile
-	json.Unmarshal(b, &f)
+	_ = json.Unmarshal(b, &f)
 	return f
 }
 
@@ -1427,13 +1386,15 @@ func loadProjectsFile() desktopProjectFile {
 		return desktopProjectFile{}
 	}
 	var f desktopProjectFile
-	json.Unmarshal(b, &f)
+	_ = json.Unmarshal(b, &f)
 	return normalizeProjectsFile(f)
 }
 
 func saveProjectsFile(f desktopProjectFile) error {
 	dir := desktopConfigDir()
-	os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 	f = normalizeProjectsFile(f)
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -1737,16 +1698,6 @@ func removeProject(root string) error {
 	return saveProjectsFile(f)
 }
 
-func projectTitle(root string) string {
-	root = normalizeProjectRoot(root)
-	for _, p := range loadProjectsFile().Projects {
-		if p.Root == root {
-			return projectDisplayName(p)
-		}
-	}
-	return workspaceName(root)
-}
-
 // --- topic helpers ----------------------------------------------------------
 
 const (
@@ -1785,7 +1736,7 @@ func loadTopicTitles(workspaceRoot string) map[string]string {
 	if err != nil {
 		return m
 	}
-	json.Unmarshal(b, &m)
+	_ = json.Unmarshal(b, &m)
 	return m
 }
 
@@ -1795,7 +1746,7 @@ func loadTopicTitleSources(workspaceRoot string) map[string]string {
 	if err != nil {
 		return m
 	}
-	json.Unmarshal(b, &m)
+	_ = json.Unmarshal(b, &m)
 	return m
 }
 
@@ -1805,7 +1756,7 @@ func loadTopicCreatedAts(workspaceRoot string) map[string]int64 {
 	if err != nil {
 		return m
 	}
-	json.Unmarshal(b, &m)
+	_ = json.Unmarshal(b, &m)
 	return m
 }
 
@@ -1922,16 +1873,6 @@ func setTopicTitleWithSource(workspaceRoot, topicID, title, source string) error
 	return saveTopicTitleSources(workspaceRoot, sources)
 }
 
-func setTopicTitleSource(workspaceRoot, topicID, source string) error {
-	sources := loadTopicTitleSources(workspaceRoot)
-	if strings.TrimSpace(source) == "" {
-		delete(sources, topicID)
-	} else {
-		sources[topicID] = strings.TrimSpace(source)
-	}
-	return saveTopicTitleSources(workspaceRoot, sources)
-}
-
 func setTopicCreatedAt(workspaceRoot, topicID string, createdAt int64) error {
 	created := loadTopicCreatedAts(workspaceRoot)
 	topicID = strings.TrimSpace(topicID)
@@ -1993,24 +1934,6 @@ func ensureTopicIndexed(scope, workspaceRoot, topicID, title, source string) err
 }
 
 // --- telemetry --------------------------------------------------------------
-
-func (a *App) tabTelemetryPath(tabID string) string {
-	a.mu.RLock()
-	tab, ok := a.tabs[tabID]
-	var ctrl *control.Controller
-	if ok && tab != nil {
-		ctrl = tab.Ctrl
-	}
-	a.mu.RUnlock()
-	if !ok || ctrl == nil {
-		return ""
-	}
-	sp := ctrl.SessionPath()
-	if sp == "" {
-		return ""
-	}
-	return sp + ".telemetry.json"
-}
 
 func saveTelemetry(path string, snapshot tabTelemetrySnapshot) error {
 	if snapshot.Version == 0 {
@@ -2138,6 +2061,26 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
+	// Determine scope from the directory. The global session dir gets Global
+	// topics; a project session dir gets project-scoped topics under the
+	// matching workspace.
+	scope := "global"
+	workspaceRoot := ""
+	topicTitleRoot := "" // workspace root for topic-title persistence
+	if dir != config.SessionDir() {
+		f := loadProjectsFile()
+		for _, p := range f.Projects {
+			if config.ProjectSessionDir(p.Root) == dir {
+				scope = "project"
+				workspaceRoot = p.Root
+				topicTitleRoot = p.Root
+				break
+			}
+		}
+		if scope != "project" {
+			return nil // not a recognized project dir; skip
+		}
+	}
 	legacyMigrationMu.Lock()
 	defer legacyMigrationMu.Unlock()
 	infos, err := agent.ListSessions(dir)
@@ -2145,8 +2088,8 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 		return nil
 	}
 	titles := loadSessionTitles(dir)
-	topicTitles := loadTopicTitles("")
-	topicSources := loadTopicTitleSources("")
+	topicTitles := loadTopicTitles(topicTitleRoot)
+	topicSources := loadTopicTitleSources(topicTitleRoot)
 	f := loadProjectsFile()
 
 	var migratedTopicIDs []string
@@ -2180,14 +2123,13 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 		if err != nil {
 			continue
 		}
-		// Only adopt genuinely-global, unscoped legacy sessions. A session that
-		// already carries a project scope or workspace root is not legacy — never
-		// strip its binding into Global.
-		if meta.Scope == "project" || strings.TrimSpace(meta.WorkspaceRoot) != "" {
+		// Skip sessions that already have a scope or workspace — they were
+		// already assigned by a previous run or by the user.
+		if meta.Scope != "" || strings.TrimSpace(meta.WorkspaceRoot) != "" {
 			continue
 		}
-		meta.Scope = "global"
-		meta.WorkspaceRoot = ""
+		meta.Scope = scope
+		meta.WorkspaceRoot = workspaceRoot
 		meta.TopicID = topicID
 		meta.TopicTitle = title
 		if err := agent.SaveBranchMetaPreserveUpdated(info.Path, meta); err != nil {
@@ -2202,10 +2144,20 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 	if len(migratedTopicIDs) == 0 {
 		return nil
 	}
-	f.GlobalTopics = uniqueStrings(append(migratedTopicIDs, f.GlobalTopics...))
+	if scope == "global" {
+		f.GlobalTopics = uniqueStrings(append(migratedTopicIDs, f.GlobalTopics...))
+	} else {
+		// Find the project entry and add topics.
+		for i, p := range f.Projects {
+			if p.Root == workspaceRoot {
+				f.Projects[i].Topics = uniqueStrings(append(migratedTopicIDs, f.Projects[i].Topics...))
+				break
+			}
+		}
+	}
 	_ = saveProjectsFile(f)
-	_ = saveTopicTitles("", topicTitles)
-	_ = saveTopicTitleSources("", topicSources)
+	_ = saveTopicTitles(topicTitleRoot, topicTitles)
+	_ = saveTopicTitleSources(topicTitleRoot, topicSources)
 	return migratedTopicIDs
 }
 
@@ -2292,7 +2244,7 @@ func restoredSessionTopicTitle(dir, sessionPath string, meta agent.BranchMeta) s
 	if s, err := agent.LoadSession(sessionPath); err == nil {
 		for _, msg := range s.Messages {
 			if msg.Role == provider.RoleUser {
-				if title := topicTitleFromText(msg.Content); title != "" {
+				if title := topicTitleFromText(control.StripComposePrefixes(agent.HandoffTask(msg.Content))); title != "" {
 					return title
 				}
 			}

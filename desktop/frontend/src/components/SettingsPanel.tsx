@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { Check, CheckCircle2, ChevronDown, ChevronUp, GripVertical, Loader2, QrCode, RefreshCw } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, ChevronUp, GripVertical, Loader2, Play, QrCode, RefreshCw } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app } from "../lib/bridge";
@@ -253,7 +253,11 @@ function SettingsSection({
         <div className="settings-section__head">
           <div>
             {title && <div className="settings-section__title">{title}</div>}
-            {description && <div className="settings-section__desc">{description}</div>}
+            {description && (
+              <div className="settings-section__desc">
+                <SettingsHint hint={description} />
+              </div>
+            )}
           </div>
           {actions && <div className="settings-section__actions">{actions}</div>}
         </div>
@@ -464,6 +468,11 @@ function normalizeReasoningProtocol(protocol: string | undefined): string {
   return REASONING_PROTOCOLS.includes(protocol ?? "") ? protocol ?? "" : "";
 }
 
+function normalizeReasoningLanguage(lang: string | undefined): string {
+  const v = String(lang ?? "").trim().toLowerCase();
+  return v === "zh" || v === "en" ? v : "auto";
+}
+
 function defaultBotSettings(): BotSettingsView {
   return {
     enabled: false,
@@ -590,9 +599,10 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     noProxy: "",
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
-  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "" };
+  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 12;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
+  agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
   return {
     ...view,
     providers: asArray(view.providers).map((p) => ({
@@ -641,10 +651,10 @@ function normalizeCloseBehavior(mode: string | undefined): CloseBehavior {
   return mode === "quit" ? "quit" : "background";
 }
 
-type DisplayMode = "standard" | "compact" | "minimal";
+type DisplayMode = "standard" | "compact";
 
 function normalizeDisplayMode(mode: string | undefined): DisplayMode {
-  return mode === "standard" || mode === "compact" || mode === "minimal" ? mode : "minimal";
+  return mode === "standard" || mode === "compact" ? mode : "compact";
 }
 
 type StatusBarStyle = "icon" | "text";
@@ -727,6 +737,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   const draggingStatusBarItemRef = useRef<StatusBarItemId | null>(null);
   const statusBarDragTargetRef = useRef<StatusBarDragTarget | null>(null);
   const mouseDragCleanupRef = useRef<(() => void) | null>(null);
+  const soundPanelId = useId();
   const statusBarItemsPanelId = useId();
   useEffect(() => onDisplayModeChange((mode) => setDisplayMode(mode)), []);
   useEffect(() => () => mouseDragCleanupRef.current?.(), []);
@@ -735,8 +746,10 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   const [genMusicPreset, setGenMusicPreset] = useState<GenerativePreset>(getGenerativePreset());
   const [soundPref, setSoundPref] = useState<SoundWavPref>(getSuccessPreference());
   const [attentionPref, setAttentionPref] = useState<SoundWavPref>(getAttentionPreference());
+  const [soundExpanded, setSoundExpanded] = useState(false);
   const statusBarStyle = normalizeStatusBarStyle(s.statusBarStyle);
   const statusBarItems = normalizeStatusBarItems(s.statusBarItems);
+  const soundStatus = summarizeSoundStatus(genMusicPreset, soundPref, attentionPref);
   const visibleStatusItems = new Set<StatusBarItemId>(statusBarItems);
   const orderedStatusItems = [
     ...statusBarItems,
@@ -914,23 +927,9 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.expandThinking")}>
-        <div className="set-seg">
-          {([false, true] as const).map((val) => (
-            <button
-              key={val ? "on" : "off"}
-              className={`set-seg__btn${s.expandThinking === val ? " set-seg__btn--on" : ""}`}
-              disabled={busy}
-              onClick={() => void apply(() => app.SetExpandThinking(val))}
-            >
-              {val ? t("settings.expandThinking.expanded") : t("settings.expandThinking.collapsed")}
-            </button>
-          ))}
-        </div>
-      </SettingsField>
       <SettingsField label={t("settings.displayMode")}>
         <div className="set-seg">
-          {(["standard", "compact", "minimal"] as const).map((mode) => (
+          {(["standard", "compact"] as const).map((mode) => (
             <button
               key={mode}
               className={`set-seg__btn${displayMode === mode ? " set-seg__btn--on" : ""}`}
@@ -959,56 +958,77 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
           ))}
         </div>
       </SettingsField>
-      <SettingsField label={t("settings.generativeMusic")} hint={t("settings.generativeMusicHint")} stacked>
-        <div className="settings-notification-sound-row">
-          <span>{t("settings.generativeMusicPreset")}</span>
-          <GenMusicSelect
-            value={genMusicPreset}
-            onChange={(next) => {
-              setGenMusicPreset(next);
-              setGenerativePreset(next);
-              if (next === "off") {
-                generativeMusic.stop();
-              } else {
-                if (generativeMusic.isRunning) {
-                  generativeMusic.setPreset(next);
-                } else if (agentRunning) {
-                  generativeMusic.start(next);
-                }
-                generativeMusic.playPreview(next);
-              }
-            }}
-            onPreview={() => { if (genMusicPreset !== "off") generativeMusic.playPreview(genMusicPreset); }}
-            previewDisabled={genMusicPreset === "off"}
-          />
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.notificationSound")} hint={t("settings.notificationSoundHint")} stacked>
-        <div className="settings-notification-sound-row">
-          <span>{t("settings.notificationSoundSuccess")}</span>
-          <SoundSelect
-            value={soundPref}
-            onChange={(next) => {
-              setSoundPref(next);
-              setSuccessPreference(next);
-              playSuccessChime();
-            }}
-            onPreview={playSuccessChime}
-            previewDisabled={soundPref === "off"}
-          />
-        </div>
-        <div className="settings-notification-sound-row" style={{ marginTop: 6 }}>
-          <span>{t("settings.notificationSoundAttention")}</span>
-          <SoundSelect
-            value={attentionPref}
-            onChange={(next) => {
-              setAttentionPref(next);
-              setAttentionPreference(next);
-              playAttentionChime();
-            }}
-            onPreview={playAttentionChime}
-            previewDisabled={attentionPref === "off"}
-          />
+      <SettingsField label={t("settings.sound")} hint={t("settings.soundHint")} stacked>
+        <div className={`settings-sound-editor${soundExpanded ? " settings-sound-editor--expanded" : ""}`}>
+          <div className="settings-sound-editor__summary">
+            <span className={`settings-sound-editor__status settings-sound-editor__status--${soundStatus}`}>
+              {t(`settings.soundStatus.${soundStatus}`)}
+            </span>
+            <Tooltip label={t(soundExpanded ? "settings.soundCollapse" : "settings.soundExpand")}>
+              <button
+                type="button"
+                className="settings-sound-editor__toggle"
+                aria-expanded={soundExpanded}
+                aria-controls={soundPanelId}
+                aria-label={t(soundExpanded ? "settings.soundCollapse" : "settings.soundExpand")}
+                onClick={() => setSoundExpanded((open) => !open)}
+              >
+                {soundExpanded ? <ChevronUp size={15} aria-hidden="true" /> : <ChevronDown size={15} aria-hidden="true" />}
+              </button>
+            </Tooltip>
+          </div>
+          {soundExpanded && (
+            <div className="settings-sound-editor__list" id={soundPanelId}>
+              <div className="settings-sound-row">
+                <span className="settings-sound-row__label">{t("settings.generativeMusic")}</span>
+                <GenMusicSelect
+                  value={genMusicPreset}
+                  onChange={(next) => {
+                    setGenMusicPreset(next);
+                    setGenerativePreset(next);
+                    if (next === "off") {
+                      generativeMusic.stop();
+                    } else {
+                      if (generativeMusic.isRunning) {
+                        generativeMusic.setPreset(next);
+                      } else if (agentRunning) {
+                        generativeMusic.start(next);
+                      }
+                      generativeMusic.playPreview(next);
+                    }
+                  }}
+                  onPreview={() => { if (genMusicPreset !== "off") generativeMusic.playPreview(genMusicPreset); }}
+                  previewDisabled={genMusicPreset === "off"}
+                />
+              </div>
+              <div className="settings-sound-row">
+                <span className="settings-sound-row__label">{t("settings.notificationSoundSuccess")}</span>
+                <SoundSelect
+                  value={soundPref}
+                  onChange={(next) => {
+                    setSoundPref(next);
+                    setSuccessPreference(next);
+                    playSuccessChime();
+                  }}
+                  onPreview={playSuccessChime}
+                  previewDisabled={soundPref === "off"}
+                />
+              </div>
+              <div className="settings-sound-row">
+                <span className="settings-sound-row__label">{t("settings.notificationSoundAttention")}</span>
+                <SoundSelect
+                  value={attentionPref}
+                  onChange={(next) => {
+                    setAttentionPref(next);
+                    setAttentionPreference(next);
+                    playAttentionChime();
+                  }}
+                  onPreview={playAttentionChime}
+                  previewDisabled={attentionPref === "off"}
+                />
+              </div>
+            </div>
+          )}
         </div>
       </SettingsField>
       <SettingsField label={t("settings.statusBarStyle")}>
@@ -1139,6 +1159,17 @@ const GENRE_OPTIONS: { value: GenerativePreset; labelKey: DictKey }[] = [
   { value: "retro", labelKey: "settings.generativeMusic.presets.retro" },
 ];
 
+function summarizeSoundStatus(
+  music: GenerativePreset,
+  success: SoundWavPref,
+  attention: SoundWavPref,
+): "allOff" | "enabled" | "custom" {
+  const enabledCount = [music !== "off", success !== "off", attention !== "off"].filter(Boolean).length;
+  if (enabledCount === 0) return "allOff";
+  if (enabledCount === 1) return "enabled";
+  return "custom";
+}
+
 function GenMusicSelect({
   value,
   onChange,
@@ -1169,9 +1200,11 @@ function GenMusicSelect({
           className={`sound-select__chev${open ? " sound-select__chev--open" : ""}`}
         />
       </button>
-      <button className="chip" type="button" title={t("settings.generativeMusicPreview")} onClick={onPreview} disabled={previewDisabled}>
-        &#x25B6;
-      </button>
+      {!previewDisabled && (
+        <button className="chip chip--icon" type="button" title={t("settings.generativeMusicPreview")} aria-label={t("settings.generativeMusicPreview")} onClick={onPreview}>
+          <Play size={13} aria-hidden="true" />
+        </button>
+      )}
       <AnchoredPopover
         open={open}
         anchorRef={triggerRef}
@@ -2211,13 +2244,14 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
   const plannerRef = toRef(s.plannerModel, s);
   const subagentRef = toRef(s.subagentModel, s);
   const plannerSelectRef = plannerRef === defaultRef ? "" : plannerRef;
-  const [defaultProvider, defaultModel] = defaultRef.split("/");
+  const [defaultProvider] = defaultRef.split("/");
   const defaultProviderView = s.providers.find((p) => p.name === defaultProvider);
-  const currentModelLabel = defaultModel || defaultRef || t("common.none");
-  const providerLabel = defaultProvider ? modelProviderLabel(defaultProvider, defaultProviderView, t) : t("common.none");
-  const plannerLabel = plannerSelectRef || t("settings.plannerNone");
-  const keyStatusLabel = defaultProviderView?.keySet ? t("settings.keySet") : t("settings.noKey");
-  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "" };
+  const modelIssue = !defaultProviderView
+    ? t("settings.modelUnavailable", { ref: defaultRef || t("common.none") })
+    : !defaultProviderView.keySet
+      ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
+      : "";
+  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
   const setAgentSteps = (maxSteps: number, plannerMaxSteps: number) => (
     app.SetAgentParams(agent.temperature, maxSteps, plannerMaxSteps, agent.systemPrompt)
   );
@@ -2328,23 +2362,13 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
               </select>
             </SettingsField>
 
-            <div className="settings-model-current" aria-label={t("settings.modelCurrentStatus")}>
-              <div>
-                <span>{t("settings.modelCurrentStatus")}</span>
-                <strong>{currentModelLabel}</strong>
-              </div>
-              <div className="settings-model-current__meta">
-                <span>{providerLabel}</span>
-                <span>{plannerLabel}</span>
-                <span>{keyStatusLabel}</span>
-              </div>
-            </div>
+            {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
           </SettingsSection>
           <SettingsSection title={t("settings.agentRuntime")} description={t("settings.agentRuntimeHint")}>
             <SettingsField label={t("settings.executorMaxSteps")} hint={t("settings.executorMaxStepsHint")}>
               <StepLimitControl
                 value={agent.maxSteps}
-                presets={[0, 10, 25, 50]}
+                presets={[10, 25, 50, 0]}
                 busy={busy}
                 onChange={(next) => void apply(() => setAgentSteps(next, agent.plannerMaxSteps))}
               />
@@ -2356,6 +2380,34 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                 busy={busy}
                 onChange={(next) => void apply(() => setAgentSteps(agent.maxSteps, next))}
               />
+            </SettingsField>
+            <SettingsField label={t("settings.coldResumePrune")} hint={t("settings.coldResumePruneHint")}>
+              <div className="set-seg">
+                {([true, false] as const).map((on) => (
+                  <button
+                    key={on ? "on" : "off"}
+                    className={`set-seg__btn${agent.coldResumePrune === on ? " set-seg__btn--on" : ""}`}
+                    disabled={busy}
+                    onClick={() => void apply(() => app.SetColdResumePrune(on))}
+                  >
+                    {on ? t("settings.coldResumePrune.on") : t("settings.coldResumePrune.off")}
+                  </button>
+                ))}
+              </div>
+            </SettingsField>
+            <SettingsField label={t("settings.reasoningLanguage")} hint={t("settings.reasoningLanguageHint")}>
+              <div className="set-seg">
+                {(["auto", "zh", "en"] as const).map((lang) => (
+                  <button
+                    key={lang}
+                    className={`set-seg__btn${agent.reasoningLanguage === lang ? " set-seg__btn--on" : ""}`}
+                    disabled={busy}
+                    onClick={() => void apply(() => app.SetReasoningLanguage(lang))}
+                  >
+                    {t(`settings.reasoningLanguage.${lang}`)}
+                  </button>
+                ))}
+              </div>
             </SettingsField>
           </SettingsSection>
         </>
