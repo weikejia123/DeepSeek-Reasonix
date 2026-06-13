@@ -122,8 +122,11 @@ export interface AppBindings {
   ClearGoal(): Promise<void>;
   ClearGoalForTab(tabID: string): Promise<void>;
   StartLoop(): Promise<void>;
+  StartLoopForTab(tabID: string): Promise<void>;
   StopLoop(): Promise<void>;
+  StopLoopForTab(tabID: string): Promise<void>;
   LoopActive(): Promise<boolean>;
+  LoopActiveForTab(tabID: string): Promise<boolean>;
   Compact(): Promise<void>;
   NewSession(): Promise<void>;
   ClearSession(): Promise<void>;
@@ -1599,6 +1602,15 @@ function makeMockApp(): AppBindings {
           if (!active) return;
         },
         async LoopActive() {
+          return false;
+        },
+        async StartLoopForTab(_tabID) {
+          // no-op mock
+        },
+        async StopLoopForTab(_tabID) {
+          // no-op mock
+        },
+        async LoopActiveForTab(_tabID) {
           return false;
         },
         async Compact() {},
