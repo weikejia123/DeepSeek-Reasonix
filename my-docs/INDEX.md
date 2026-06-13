@@ -1,5 +1,11 @@
 # 文档索引
 
+## 00-09 · 00-project-meta（项目元信息）
+
+| 文件 | 说明 |
+|------|------|
+| [pr-history.md](00-project-meta/pr-history.md) | 向上游提交的 PR 历史记录 |
+
 ## 10-19 · 01-dev-read（源码阅读分析）
 
 | 序号 | 文件 | 说明 |
@@ -33,6 +39,7 @@
 | 文件 | 说明 |
 |------|------|
 | [chat-file-link-navigation.md](03-feature-action/chat-file-link-navigation.md) | 对话文件链接导航 — 设计草案 → 实施实录 |
+| [chat-file-link-navigation-regression.md](03-feature-action/chat-file-link-navigation-regression.md) | 文件链接导航 — 回归影响分析 |
 | [git-branch-display-bug.md](03-feature-action/git-branch-display-bug.md) | 顶部 git 分支显示 bug 分析 |
 | [hope-command-design.md](03-feature-action/hope-command-design.md) | Hope 指令功能设计草案 |
 | [message-send-queue-design.md](03-feature-action/message-send-queue-design.md) | 消息发送队列设计草案 |
