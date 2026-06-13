@@ -16819,21 +16819,14 @@ a[href] {
 }
 
 .workspace-branch-indicator > .workspace-branch-name {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  border: none;
-  background: transparent;
   color: var(--fg);
-  cursor: pointer;
   font-family: inherit;
   font-size: 12px;
-  padding: 1px 4px;
-  border-radius: 3px;
+  white-space: nowrap;
 }
 
 .workspace-branch-indicator > .workspace-branch-name:hover {
-  background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+  background: none;
 }
 
 .workspace-branch-indicator > .workspace-branch-name span {
