@@ -66,14 +66,33 @@ Turn 2: TurnStarted → thinking → TurnDone → ""  (emit ✅)
 
 这种场景下 React 可能会**批处理**两次 `setProjectRevision`，但由于值从 1→2 实际上只渲染一次，`ListWorkspaceFiles` 的 useEffect 只在最终渲染时触发（依赖 `projectRevision`），所以不是此问题的根因。
 
-### 根本原因总结
+## 根本原因
 
-经过完整的代码审阅，核心问题**不是**刷新事件未触发，而是工作区文件树的刷新机制有天然的设计局限：
+**纯前端问题。** `WorkspacePanel` 的 `refreshKey` 回调没有清空目录缓存。
 
-1. **`ListWorkspaceFiles()` 仅在 `projectRevision` 或 `dockRefreshKey` 变化时重载**（`App.tsx:860`）—— 这些都是基于事件的被动刷新
-2. **没有主动的文件系统监听（fsnotify/inotify）** —— 文件变更不主动推送
-3. **WorkspacePanel 的 `refreshKey` 机制只重载已打开的目录**（`WorkspacePanel.tsx:532`）—— 如果新文件创建在**未展开**的目录下，目录树不会显示
-4. **特定场景下 Go 后端没有调用 `emitProjectTreeChanged`** —— 当 `ToolResult` 事件不改变活动状态时（`thinking`→`thinking`），不触发树刷新
+对比两个刷新路径：
+
+```
+open=false→true (切换面板回来)      refreshKey 变化 (TurnDone)
+══════════════════════════════      ══════════════════════════
+setEntriesByDir({})   ← 清空缓存   ❌ 缺失 — 不清缓存
+loadDir("")           ← 重载根目录  loadDir(已展开目录) ← 只刷新已展开的
+```
+
+`refreshKey` 变化时不清空 `entriesByDir` 缓存，`loadDir` 用 `setEntriesByDir((prev) => ({ ...prev, [dir]: entries }))` 覆盖回去——但未展开的目录根本没被重载，其旧缓存直接保留。新文件如果在这些目录下，不可见。
+
+**Go 后端不需要改动** — TurnDone 时 `emitProjectTreeChanged` 正常触发，`dockRefreshKey` 正常变化，前端数据源也是最新的。问题仅在前端缓存清理。
+
+## 修复
+
+`WorkspacePanel.tsx:532` — 加一行 `setEntriesByDir({})`：
+
+```diff
+  openDirsRef.current.forEach((dir) => void loadDir(dir));
++ setEntriesByDir({});
+```
+
+改动 1 行。Go 后端零改动。
 
 ## 影响范围
 
@@ -90,44 +109,4 @@ Turn 2: TurnStarted → thinking → TurnDone → ""  (emit ✅)
 
 ## 推荐修复
 
-### 方案 A：在 ToolResult 时主动触发（轻量）
-
-在 `tabEventSink.emit()` 中，对 writer 工具（`write_file`、`edit_file`、`multi_edit`、`delete_range`、`delete_symbol`）的 `ToolResult`，无条件调用 `emitProjectTreeChanged()`：
-
-```go
-// tabs.go:237 附近
-if e.Kind == event.ToolResult && isFileWriter(e.Tool.Name) && e.Tool.Err == "" {
-    s.app.emitProjectTreeChanged()
-}
-```
-
-优点：改动最小，仅在文件变更时刷新
-缺点：高频文件操作可能触发多次刷新
-
-### 方案 B：添加文件系统监听（完整）
-
-在 Go 端使用 `fsnotify` 监听工作区变更，文件变更时自动 `emitProjectTreeChanged`。
-
-优点：彻底解决，不依赖工具事件
-缺点：改动较大，需要处理大量 OS 文件变更噪声
-
-### 方案 C：WorkspacePanel 收到 refreshKey 时强制重置（防御性）
-
-在 WorkspacePanel 的 `refreshKey` useEffect 中，不仅重载已打开目录，也**重置根目录**：
-
-```typescript
-// WorkspacePanel.tsx:526
-useEffect(() => {
-    if (!open || !refreshKey) return;
-    setEntriesByDir({});   // 清空缓存 ← 新增
-    loadDir("");            // 重载根 ← 新增
-    openDirsRef.current.forEach((dir) => void loadDir(dir));
-}, [...]);
-```
-
-优点：确保每次 refreshKey 变化都全量刷新
-缺点：刷新所有展开的目录可能较重
-
-### 推荐组合：A + C
-
-方案 A 确保文件变更立即推送，方案 C 确保 UI 侧可靠刷新。
+**纯前端 1 行改动。** `WorkspacePanel.tsx:532` 加 `setEntriesByDir({})`，已在本文档更新同时应用。

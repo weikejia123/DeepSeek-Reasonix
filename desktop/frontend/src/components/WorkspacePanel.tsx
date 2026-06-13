@@ -529,7 +529,9 @@ export function WorkspacePanel({
       void loadGitHistory();
       void loadWorkspaceChanges();
     }
-    openDirsRef.current.forEach((dir) => void loadDir(dir));
+    setEntriesByDir({});
+    const dirs = Array.from(openDirsRef.current);
+    dirs.forEach((dir) => void loadDir(dir));
   }, [loadGitHistory, loadWorkspaceChanges, loadDir, open, refreshKey, viewMode]);
 
   useEffect(() => {
