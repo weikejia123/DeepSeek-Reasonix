@@ -3241,7 +3241,7 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 		if text == "" {
 			continue
 		}
-		c.Send(text)
+		c.SubmitDisplay("A-Loop: "+text, text)
 	}
 }
 
