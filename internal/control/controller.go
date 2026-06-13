@@ -3178,7 +3178,7 @@ func (c *Controller) StartLoop(projectRoot string) error {
 		defaultScript := `#!/bin/bash
 # .aloop/main.sh — 默认定时检测脚本
 # 非空 stdout 将作为 prompt 发送给 agent
-git status --porcelain 2>/dev/null
+echo "!ls"
 `
 		if wErr := os.WriteFile(scriptPath, []byte(defaultScript), 0755); wErr != nil {
 			c.mu.Unlock()
@@ -3241,7 +3241,7 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 		if text == "" {
 			continue
 		}
-		c.Send(text)
+		c.SubmitDisplay("A-Loop: "+text, text)
 	}
 }
 
