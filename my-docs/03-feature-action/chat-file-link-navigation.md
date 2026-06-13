@@ -228,7 +228,8 @@ tokenizer 只按空白符拆分，不处理 Markdown 格式化字符。
 
 | 类别 | AI 输出示例 | 阻断位置 |
 |------|-------------|---------|
-| 非代码扩展名的根文件 | `go.mod`（`.mod` 不在 `CODE_EXTS`）、`Makefile`、`Dockerfile` | prefilter：无 `/` 且 `lastExt` 不命中 `CODE_EXTS` |
+| ~~非代码扩展名的根文件~~ | `go.mod`、`go.sum`、`.npmrc` | ✅ **已修复**：扩展名集改为 `BASE_EXTS ∪ workspace` 动态集合 |
+| 无扩展名的文件 | `Makefile`、`Dockerfile`、`.gitattributes` | prefilter：无 `/` 且无扩展名 → 跳过（只能靠含 `/` 的完整路径匹配） |
 | 代码块内的路径 | `` ```go\npackage main\n``` `` 内的任何路径 | `linkifyPaths` 的 fence 检测跳过整段 |
 | 不存在的路径 | AI 幻觉出的路径 | `fileSet.has` 无此 key |
 | basename 歧义（同名多目录） | 仅写 `index.ts` 但项目有 3 个 `index.ts` | `buildBasenameIndex` → `null`（标记为歧义）→ 不链接 |
@@ -237,15 +238,24 @@ tokenizer 只按空白符拆分，不处理 Markdown 格式化字符。
 ### 三阶段过滤链
 
 ```
-word → stripMDFormatting → stripSurroundingPunct → pathOnly
-                                                      ↓
-                                    prefilter: / 或 CODE_EXTS ？
-                                      ↓ Yes              ↓ No → ❌ 丢弃
-                                    fileSet.has(pathOnly) ？
-                                      ↓ Yes → ✅          ↓ No
-                                    basenameIndex 歧义检测
-                                      ↓ 唯一 → ✅         ↓ 歧义/无 → ❌
+word → stripStyle/backtick/punct wrappers → candidate
+                                               ↓
+                 prefilter: / 或 ext ∈ (BASE_EXTS ∪ workspaceDynExts) ？
+                   ↓ Yes                          ↓ No → ❌ 丢弃
+                 fileSet.has(candidate) ？
+                   ↓ Yes → ✅                      ↓ No
+                 basenameIndex 歧义检测
+                   ↓ 唯一 → ✅                     ↓ 歧义/无 → ❌
 ```
+
+### 扩展名集演进（静态 → 静态+动态）
+
+| 阶段 | 实现 | 能匹配的根文件 |
+|------|------|-------------|
+| v1 | 硬编码 `CODE_EXTS`（32 种） | `.go` `.ts` `.md` 等常见源码扩展名 |
+| v2 | `BASE_EXTS`（32 种）+ `buildExtSet(fileSet)` 动态合并 | v1 + 项目实际存在的所有扩展名（`.mod` `.sum` `.npmrc` 等） |
+
+实现位置：`pathLinkify.ts:8-29`。`BASE_EXTS` 保证新项目（文件少）也能工作，`buildExtSet` 每轮从 `fileSet` 提取一次（52.5 万文件约 20ms），零用户感知。Set 并集自动去重。
 
 ### 当前状态总评
 
@@ -280,7 +290,10 @@ word → stripMDFormatting → stripSurroundingPunct → pathOnly
    按空白符拆分 token 后逐条检查。性能足够且实现更简单。
 3. **额外处理 Markdown 格式化字符**：草案完全忽略了反引号问题，实际发现这导致所有
    路径一概无法匹配。新增 `stripMDFormatting()` 作为修复。
-4. **未使用 `cwd` 参数**：草案设计了 `cwd` 用于拼接相对路径，但 `ListWorkspaceFiles`
+4. **扩展名从静态白名单改为静态+动态并集**：`BASE_EXTS`（32 种）兜底保证新项目可用，
+   `buildExtSet(fileSet)` 动态提取项目实际扩展名。不再需要手动维护，`go.mod`/`go.sum`
+   等文件无需含 `/` 即可被链接。
+5. **未使用 `cwd` 参数**：草案设计了 `cwd` 用于拼接相对路径，但 `ListWorkspaceFiles`
    返回的就是工作区相对路径，无需额外拼接。
 
 ---
@@ -289,7 +302,8 @@ word → stripMDFormatting → stripSurroundingPunct → pathOnly
 
 1. ~~文件集数据来源~~ → **已决策**：Go API `ListWorkspaceFiles()`（方案 B）
 2. ~~文件路径歧义~~ → **已处理**：`buildBasenameIndex` 歧义检测（唯一短名可链，歧义短名跳过）
-3. **行号锚点**（二期）— CodeViewer 是否支持 `#L93` hash 跳转？一期只链接文件，行号保留在链接文本中供人工参考
+3. **行号锚点**（二期）— CodeViewer 是否支持 `#L93` hash 跳转？一期只链接文件
 4. ~~工作区切换~~ → **已处理**：`useEffect` 依赖 `[projectRevision, dockRefreshKey]` 自动重建文件集
-5. **文件链接视觉样式** — 目前链接是浏览器默认蓝色 `<a>` 样式，可自定义 CSS
-6. **中文标点粘连** — 已知盲区，`stripSurroundingPunct` 已实现需验证，留到下阶段
+5. ~~非代码扩展名~~ → **已处理**：`BASE_EXTS ∪ buildExtSet(fileSet)` 动态集合
+6. **文件链接视觉样式** — 目前是浏览器默认蓝色 `<a>` 样式，可自定义 CSS
+7. **目录链接定位** — 目录节点异步加载后树不会自动滚动到可视区，需改 `selectFile`
