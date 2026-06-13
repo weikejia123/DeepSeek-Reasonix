@@ -91,6 +91,7 @@
 | [20260613-文件链接导航回归分析.md](03-feature-action/20260613-文件链接导航回归分析.md) | 文件链接导航 — 回归影响分析 |
 | [20260613-Git分支显示Bug分析.md](03-feature-action/20260613-Git分支显示Bug分析.md) | 顶部 git 分支显示 bug 分析 |
 | [20260613-Hope指令设计草案.md](03-feature-action/20260613-Hope指令设计草案.md) | Hope 指令功能设计草案 |
+| [20260614-file-tree-refresh-bug.md](03-feature-action/20260614-file-tree-refresh-bug.md) | Bug 分析 — Turn 完成后文件树不显示新文件 |
 
 ## 40-49 · 04-capabilities（基础能力清单）
 
