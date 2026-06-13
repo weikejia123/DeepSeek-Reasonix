@@ -845,7 +845,7 @@ export default function App() {
       if (cancelled) return;
       setGitBranch(r.gitBranch ?? "");
       setGitAvailable(r.gitAvailable);
-      setChangeCount(r.files?.length ?? 0);
+      setChangeCount(r.files?.filter((f) => f.sources.includes("git")).length ?? 0);
     }).catch(() => {
       setGitBranch("");
       setGitAvailable(false);
