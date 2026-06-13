@@ -17,8 +17,14 @@
 | 05 | [05-loop-lifecycle.md](01-dev-read/05-loop-lifecycle.md) | Loop 模式生命周期追踪记录 |
 | 06 | [06-agent-capability-assessment.md](01-dev-read/06-agent-capability-assessment.md) | Agent 能力评估报告 |
 | 07 | [07-vs-claude-code-codex-analysis.md](01-dev-read/07-vs-claude-code-codex-analysis.md) | 与 Claude Code / Codex 的对比分析 |
+| 08 | [08-three-modes-analysis.md](01-dev-read/08-three-modes-analysis.md) | Normal / Plan / Goal 三种模式的对比分析 |
 | 09 | [09-tool-system.md](01-dev-read/09-tool-system.md) | Tool System — 工具注册、分发、执行 + 全量工具目录 |
+| 10 | [10-agent-core-loop.md](01-dev-read/10-agent-core-loop.md) | Agent Core Loop — Run 完整循环 + 六道防护机制 |
 | 11 | [11-skill-system.md](01-dev-read/11-skill-system.md) | Skill System — 发现、加载、inline/subagent 执行 |
+| 12 | [12-mcp-system.md](01-dev-read/12-mcp-system.md) | MCP System — 插件连接、传输与工具代理 |
+| 13 | [13-context-compaction.md](01-dev-read/13-context-compaction.md) | Context & Compaction — 上下文管理与三阈值压缩 |
+| 14 | [14-hook-system.md](01-dev-read/14-hook-system.md) | Hook System — 10 事件点 + 阻塞/非阻塞扩展 |
+| 15 | [15-boot-sequence.md](01-dev-read/15-boot-sequence.md) | Boot Sequence — Build() 从零到就绪的完整启动流程 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 
