@@ -833,7 +833,6 @@ export default function App() {
   const [projectRevision, setProjectRevision] = useState(0);
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
   const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
-  const [loopActive, setLoopActive] = useState(false);
   const [transientOverlayDismissSignal, setTransientOverlayDismissSignal] = useState(0);
   const [gitBranch, setGitBranch] = useState("");
   const [gitAvailable, setGitAvailable] = useState(false);
@@ -1135,6 +1134,7 @@ export default function App() {
     ? composerProfilesByTab[activeTabId] ?? backendActiveComposerProfile
     : defaultComposerProfile;
   const goal = composerProfile.goal;
+  const loopActive = composerProfile.loopActive;
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
   const tokenMode: TokenMode = composerProfile.tokenMode;
@@ -1283,7 +1283,7 @@ export default function App() {
     [applyGoal, send],
   );
   const applyLoopActive = useCallback(async (active: boolean) => {
-    setLoopActive(active);
+    patchActiveComposerProfile({ loopActive: active }, []);
     try {
       if (active) {
         await app.StartLoop();
@@ -1292,9 +1292,9 @@ export default function App() {
       }
     } catch (e: any) {
       notice(`${e}`);
-      setLoopActive(false);
+      patchActiveComposerProfile({ loopActive: false }, []);
     }
-  }, [notice]);
+  }, [notice, patchActiveComposerProfile]);
   // Shift+Tab toggles only the collaboration axis; Ctrl/Cmd+Y toggles YOLO on the
   // tool-permission axis while preserving the Ask/Auto base mode.
   const cycleMode = useCallback(() => {

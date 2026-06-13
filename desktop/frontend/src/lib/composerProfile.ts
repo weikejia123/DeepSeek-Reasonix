@@ -25,6 +25,7 @@ export interface ComposerProfile {
   toolApprovalMode: ToolApprovalMode;
   tokenMode: TokenMode;
   goal: string;
+  loopActive: boolean;
   pending: ComposerProfilePending;
 }
 
@@ -38,6 +39,7 @@ export const defaultComposerProfile: ComposerProfile = Object.freeze({
   toolApprovalMode: "ask",
   tokenMode: "full",
   goal: "",
+  loopActive: false,
   pending: {},
 });
 
@@ -62,6 +64,7 @@ export function composerProfileFromTab(tab?: TabMeta | null): ComposerProfile {
     toolApprovalMode: normalizeToolApprovalMode(tab.toolApprovalMode, legacyMode, tab.toolApprovalMode === "yolo"),
     tokenMode: normalizeTokenMode(tab.tokenMode),
     goal,
+    loopActive: false,
   });
 }
 
@@ -76,6 +79,7 @@ export function composerProfileFromMeta(meta?: Meta | null, legacyMode?: Mode): 
     toolApprovalMode,
     tokenMode: normalizeTokenMode(meta.tokenMode),
     goal,
+    loopActive: false,
   });
 }
 
@@ -107,6 +111,7 @@ function profilesEqual(a: ComposerProfile | undefined, b: ComposerProfile | unde
     && a.toolApprovalMode === b.toolApprovalMode
     && a.tokenMode === b.tokenMode
     && a.goal === b.goal
+    && a.loopActive === b.loopActive
     && profileFields.every((field) => Boolean(a.pending[field]) === Boolean(b.pending[field]));
 }
 
