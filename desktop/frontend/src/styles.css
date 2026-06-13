@@ -4558,6 +4558,19 @@ a[href] {
   --composer-modebar-active-fg: var(--mode-yolo-fg);
 }
 
+/* loop modebar: 2-column grid, no active colors override */
+.composer-modebar--loop {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.composer-modebar--loop .composer-modebar__thumb {
+  width: calc((100% - 4px) / 2);
+}
+
+.composer-modebar--loop[data-active="true"] {
+  --composer-modebar-index: 1;
+}
+
 .composer-modebar__thumb {
   position: absolute;
   top: 2px;

@@ -2072,8 +2072,9 @@ export function Composer({
                 </button>
               </div>
             </div>
-            <div className="composer-meta__control composer-meta__control--loop" title="定时检测（执行 .aloop/main.sh）">
+            <div className="composer-meta__control composer-meta__control--loop" title="每 30 秒执行 .aloop/main.sh，输出非空即发">
               <div className="composer-modebar composer-modebar--loop" data-active={loopActive}>
+                <span className="composer-modebar__thumb" aria-hidden="true" />
                 <button
                   type="button"
                   className={`composer-modebar__item composer-modebar__item--normal${!loopActive ? " composer-modebar__item--active" : ""}`}
@@ -2091,7 +2092,7 @@ export function Composer({
                   aria-pressed={loopActive}
                 >
                   <RefreshCw size={14} />
-                  <span>定时检测</span>
+                  <span>A-Loop</span>
                 </button>
               </div>
             </div>

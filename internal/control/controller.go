@@ -3169,8 +3169,21 @@ func (c *Controller) StartLoop(projectRoot string) error {
 	}
 	scriptPath := filepath.Join(projectRoot, ".aloop", "main.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("aloop: %w", err)
+		// Auto-create .aloop/ directory and default main.sh.
+		aloopDir := filepath.Join(projectRoot, ".aloop")
+		if mkErr := os.MkdirAll(aloopDir, 0755); mkErr != nil {
+			c.mu.Unlock()
+			return fmt.Errorf("aloop: create .aloop dir: %w", mkErr)
+		}
+		defaultScript := `#!/bin/bash
+# .aloop/main.sh — 默认定时检测脚本
+# 非空 stdout 将作为 prompt 发送给 agent
+git status --porcelain 2>/dev/null
+`
+		if wErr := os.WriteFile(scriptPath, []byte(defaultScript), 0755); wErr != nil {
+			c.mu.Unlock()
+			return fmt.Errorf("aloop: write default main.sh: %w", wErr)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.loopActive = true
