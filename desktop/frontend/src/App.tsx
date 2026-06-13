@@ -34,7 +34,6 @@ import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
-import { buildFileSetFromList } from "./lib/workspaceFileSet";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
 import { ApprovalModal } from "./components/ApprovalModal";
@@ -850,20 +849,6 @@ export default function App() {
     });
     return () => { cancelled = true; };
   }, [dockRefreshKey]);
-
-  const [workspaceFileSet, setWorkspaceFileSet] = useState<Set<string>>(new Set());
-
-  // Fetch workspace file list for path linkification.
-  useEffect(() => {
-    let cancelled = false;
-    app.ListWorkspaceFiles().then((files) => {
-      if (cancelled) return;
-      setWorkspaceFileSet(buildFileSetFromList(files));
-    }).catch(() => {
-      if (!cancelled) setWorkspaceFileSet(new Set());
-    });
-    return () => { cancelled = true; };
-  }, [projectRevision, dockRefreshKey]);
 
   const [desktopPlatform, setDesktopPlatform] = useState<DesktopPlatform>(detectBrowserPlatform);
   const [statusBarStyle, setStatusBarStyle] = useState<"icon" | "text">("text");
@@ -2715,9 +2700,6 @@ export default function App() {
                 checkpoints={state.checkpoints}
                 actionPending={state.messageAction != null}
                 rewindDisabled={state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
-                defaultExpandThinking={expandThinking}
-                filePathSet={workspaceFileSet}
-                onOpenWorkspaceFile={openRightDockFile}
                 rewindSignal={rewindSignal}
               />
             )}

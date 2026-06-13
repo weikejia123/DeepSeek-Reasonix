@@ -23,10 +23,10 @@ type QuestionAnchor = { id: string; text: string; turn: number };
 const QUESTION_NAV_MIN_COUNT = 2;
 const LiveStreamContext = createContext<LiveStream | undefined>(undefined);
 
-const LiveAssistantMessage = memo(function LiveAssistantMessage({ item, defaultExpanded = false, filePathSet, onOpenWorkspaceFile }: { item: AssistantItem; defaultExpanded?: boolean; filePathSet?: Set<string>; onOpenWorkspaceFile?: (path: string) => void }) {
+const LiveAssistantMessage = memo(function LiveAssistantMessage({ item, defaultExpanded = false }: { item: AssistantItem; defaultExpanded?: boolean }) {
   const live = useContext(LiveStreamContext);
   const shown = live && live.id === item.id ? { ...item, text: live.text, reasoning: live.reasoning, streaming: true } : item;
-  return <AssistantMessage item={shown} defaultExpanded={defaultExpanded} filePathSet={filePathSet} onOpenWorkspaceFile={onOpenWorkspaceFile} />;
+  return <AssistantMessage item={shown} defaultExpanded={defaultExpanded} />;
 });
 
 // ── Layer budgets ─────────────────────────────────────────────────────────────
@@ -142,8 +142,6 @@ export function Transcript({
   rewindDisabled = false,
   questionNavigator = true,
   rewindSignal = 0,
-  filePathSet,
-  onOpenWorkspaceFile,
 }: {
   items: Item[];
   live?: LiveStream;
@@ -155,8 +153,6 @@ export function Transcript({
   rewindDisabled?: boolean;
   questionNavigator?: boolean;
   rewindSignal?: number;
-  filePathSet?: Set<string>;
-  onOpenWorkspaceFile?: (path: string) => void;
 }) {
   const {
     scrollRef,
@@ -406,8 +402,6 @@ export function Transcript({
             durationMs={dur}
             mode={displayMode}
             subcalls={subcallsByParent}
-            filePathSet={filePathSet}
-            onOpenWorkspaceFile={onOpenWorkspaceFile}
           />,
         );
         collapseBatch = [];
@@ -450,8 +444,6 @@ export function Transcript({
               durationMs={dur}
               mode={displayMode}
               subcalls={subcallsByParent}
-              filePathSet={filePathSet}
-              onOpenWorkspaceFile={onOpenWorkspaceFile}
             />,
           );
         } else if (nonAssistantItems.length > 0) {
@@ -467,7 +459,7 @@ export function Transcript({
         // Render the final assistant message (if any) directly
         for (const it of group.items) {
           if (it.kind !== "assistant") continue;
-          out.push(<LiveAssistantMessage key={it.id} item={it as AssistantItem} defaultExpanded={false} filePathSet={filePathSet} onOpenWorkspaceFile={onOpenWorkspaceFile} />);
+          out.push(<LiveAssistantMessage key={it.id} item={it as AssistantItem} defaultExpanded={false} />);
           if (!it.streaming && it.text.trim() !== "") {
             actionText = it.text;
             actionReady = true;
@@ -509,7 +501,7 @@ export function Transcript({
             break;
           }
           case "assistant":
-            out.push(<LiveAssistantMessage key={it.id} item={it as AssistantItem} defaultExpanded={false} filePathSet={filePathSet} onOpenWorkspaceFile={onOpenWorkspaceFile} />);
+            out.push(<LiveAssistantMessage key={it.id} item={it as AssistantItem} defaultExpanded={false} />);
             if (!it.streaming && it.text.trim() !== "") {
               actionText = it.text;
               actionReady = true;
@@ -573,8 +565,6 @@ export function Transcript({
                 return next;
               });
             }}
-            filePathSet={filePathSet}
-            onOpenWorkspaceFile={onOpenWorkspaceFile}
           />
         )}
         <div ref={entranceRef}>
@@ -606,8 +596,6 @@ const WarmZone = memo(function WarmZone({
   warmSetOpenAction,
   onToggleColdPage,
   onToggleWarmTurn,
-  filePathSet,
-  onOpenWorkspaceFile,
 }: {
   turnGroups: TurnGroup[];
   expandedWarmTurns: ReadonlySet<number>;
@@ -625,8 +613,6 @@ const WarmZone = memo(function WarmZone({
   warmSetOpenAction: (action: OpenTurnAction | null) => void;
   onToggleColdPage: () => void;
   onToggleWarmTurn: (g: number, expand: boolean) => void;
-  filePathSet?: Set<string>;
-  onOpenWorkspaceFile?: (path: string) => void;
 }) {
   const t = useT();
   const out: React.ReactNode[] = [];
@@ -679,8 +665,6 @@ const WarmZone = memo(function WarmZone({
               rewindDisabled={warmRewindDisabled}
               onRewind={warmOnRewind}
               setOpenAction={warmSetOpenAction}
-              filePathSet={filePathSet}
-              onOpenWorkspaceFile={onOpenWorkspaceFile}
             />
           </WarmTurnCard>,
         );
@@ -724,8 +708,6 @@ function WarmTurnItems({
   rewindDisabled,
   onRewind,
   setOpenAction,
-  filePathSet,
-  onOpenWorkspaceFile,
 }: {
   startIdx: number;
   endIdx: number;
@@ -738,8 +720,6 @@ function WarmTurnItems({
   rewindDisabled: boolean;
   onRewind: ((turn: number, scope: string) => void) | undefined;
   setOpenAction: (action: OpenTurnAction | null) => void;
-  filePathSet?: Set<string>;
-  onOpenWorkspaceFile?: (path: string) => void;
 }) {
   const nodes: React.ReactNode[] = [];
   let actionText = "";
@@ -798,7 +778,7 @@ function WarmTurnItems({
         break;
       }
       case "assistant": {
-        nodes.push(<AssistantMessage key={it.id} item={it} defaultExpanded={false} filePathSet={filePathSet} onOpenWorkspaceFile={onOpenWorkspaceFile} />);
+        nodes.push(<AssistantMessage key={it.id} item={it} defaultExpanded={false} />);
         if (!it.streaming && it.text.trim() !== "") {
           actionText = it.text;
           actionReady = true;
@@ -887,11 +867,9 @@ type TurnCollapseProps = {
   durationMs: number;  // summed tool execution time across the batch; 0 when unknown
   mode: DisplayMode;
   subcalls: Map<string, ToolItem[]>;
-  filePathSet?: Set<string>;
-  onOpenWorkspaceFile?: (path: string) => void;
 };
 
-function TurnCollapse({ items, durationMs, mode, subcalls, filePathSet, onOpenWorkspaceFile }: TurnCollapseProps) {
+function TurnCollapse({ items, durationMs, mode, subcalls }: TurnCollapseProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -941,7 +919,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, filePathSet, onOpenWo
       case "phase": body.push(<PhaseCard key={it.id} text={it.text} />); break;
       case "assistant": {
         const displayItem = it;
-        body.push(<AssistantMessage key={it.id} item={displayItem as AssistantItem} filePathSet={filePathSet} onOpenWorkspaceFile={onOpenWorkspaceFile} />);
+        body.push(<AssistantMessage key={it.id} item={displayItem as AssistantItem} />);
         break;
       }
     }

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, RotateCcw, ScrollText } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
@@ -9,7 +9,6 @@ import { useT } from "../lib/i18n";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import type { Item, MessageActionScope } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
-import { linkifyPaths } from "../lib/pathLinkify";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 export type TurnActionMenu = "summary" | "rewind";
@@ -339,13 +338,9 @@ export function TurnActions({
 export const AssistantMessage = memo(function AssistantMessage({
   item,
   defaultExpanded = false,
-  filePathSet,
-  onOpenWorkspaceFile,
 }: {
   item: AssistantItem;
   defaultExpanded?: boolean;
-  filePathSet?: Set<string>;
-  onOpenWorkspaceFile?: (path: string) => void;
 }) {
   const t = useT();
   const reasoningBodyRef = useRef<HTMLDivElement>(null);
@@ -382,11 +377,6 @@ export const AssistantMessage = memo(function AssistantMessage({
   const hasText = item.streaming || item.text.trim() !== "";
   const processOnly = Boolean(item.reasoning) && !hasText;
   const processWithText = Boolean(item.reasoning) && hasText;
-  // Linkify file paths only after streaming completes.
-  const linkedText = useMemo(() => {
-    if (item.streaming || !filePathSet) return item.text;
-    return linkifyPaths(item.text, filePathSet);
-  }, [item.text, item.streaming, filePathSet]);
   return (
     <div className={`msg msg--assistant${processOnly ? " msg--process-only" : ""}${processWithText ? " msg--process-with-text" : ""}`} data-history-restore={item.id.startsWith("h") ? "" : undefined} data-entrance={item.id}>
       {item.reasoning && (
@@ -408,11 +398,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       )}
       {hasText && (
         <div className="msg__body">
-          <Markdown
-            text={linkedText}
-            showCursor={item.streaming}
-            onOpenWorkspaceFile={onOpenWorkspaceFile}
-          />
+          <Markdown text={item.text} showCursor={item.streaming} />
         </div>
       )}
     </div>
