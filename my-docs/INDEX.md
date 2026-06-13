@@ -16,6 +16,20 @@
 | [core-concepts.md](05-overview/core-concepts.md) | 核心概念词汇表 — Agent/Turn/Tool/Skill/MCP 等 20 个概念 |
 | [project-structure.md](05-overview/project-structure.md) | 项目结构导览 — 46 个 internal 包分类地图 |
 
+## 05-09 · 06-architecture（L2 系统架构）
+
+| 文件 | 说明 |
+|------|------|
+| [system-architecture.md](06-architecture/system-architecture.md) | 系统架构总图 — 完整分层图 + 组件交互矩阵 + 关键路径 |
+| [data-flow-turn.md](06-architecture/data-flow-turn.md) | 单 Turn 全链路 — 时序图 + 数据结构变化 + 事件流 |
+| [data-flow-skill.md](06-architecture/data-flow-skill.md) | Skill 调用全链路 — inline/subagent 两条路径 |
+
+## 05-09 · 07-extension-guide（L4 扩展指南）
+
+| 文件 | 说明 |
+|------|------|
+| [extension-guide.md](07-extension-guide/extension-guide.md) | 扩展指南合集 — 如何新增 Tool / Skill / MCP / Provider / Hook / Command / Frontend 组件 |
+
 ## 10-19 · 01-dev-read（L3 源码阅读分析）
 
 | 序号 | 文件 | 说明 |
