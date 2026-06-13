@@ -25,6 +25,15 @@
 | 13 | [13-context-compaction.md](01-dev-read/13-context-compaction.md) | Context & Compaction — 上下文管理与三阈值压缩 |
 | 14 | [14-hook-system.md](01-dev-read/14-hook-system.md) | Hook System — 10 事件点 + 阻塞/非阻塞扩展 |
 | 15 | [15-boot-sequence.md](01-dev-read/15-boot-sequence.md) | Boot Sequence — Build() 从零到就绪的完整启动流程 |
+| 16 | [16-session-persistence.md](01-dev-read/16-session-persistence.md) | Session & Persistence — 会话生命周期、JSONL持久化、检查点 |
+| 17 | [17-provider-system.md](01-dev-read/17-provider-system.md) | Provider System — LLM调用、流式、多提供商、前缀缓存 |
+| 18 | [18-subagent-task.md](01-dev-read/18-subagent-task.md) | Subagent/Task — 子代理隔离、FilterRegistry、continuation |
+| 19 | [19-memory-system.md](01-dev-read/19-memory-system.md) | Memory System — 层级加载、四种类型、REASONIX.md |
+| 20 | [20-plan-mode.md](01-dev-read/20-plan-mode.md) | Plan Mode — 双轮规划→批准→执行架构 |
+| 21 | [21-approval-gate.md](01-dev-read/21-approval-gate.md) | Approval & Gate — 三层权限、YOLO、SessionGrant |
+| 22 | [22-evidence-todo.md](01-dev-read/22-evidence-todo.md) | Evidence & Todo — complete_step验证、task list状态机 |
+| 23 | [23-checkpoint-rewind.md](01-dev-read/23-checkpoint-rewind.md) | Checkpoint & Rewind — 每turn快照、code/conversation回退 |
+| 24 | [24-auto-plan.md](01-dev-read/24-auto-plan.md) | Auto-Plan — 分类器评分、自动触发plan模式 |
 
 ## 20-29 · 02-dev-faq（知识问答与诊断）
 

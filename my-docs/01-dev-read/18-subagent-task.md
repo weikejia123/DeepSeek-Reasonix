@@ -1,0 +1,70 @@
+# Subagent / Task System — 子代理委托
+
+<!--
+版本: v1.0
+创建: 2026-06-13 23:44:00
+更新: 2026-06-13 23:44:00
+-->
+
+**能力类型**: 系统架构文档
+**涉及包**: `internal/agent/task.go`、`internal/agent/subagent_store.go`
+
+## 架构
+
+```
+task(prompt, tools, model, effort, continue_from, fork_from)
+  │
+  ├─ FilterRegistry(parent, names, SubagentMetaTools()...)  → 工具白名单
+  ├─ SubagentStore.PrepareFresh/Fork/Continue(spec)         → 子 session
+  ├─ agent.RunSubAgentWithSession(ctx, prov, subReg, session, task, opts)
+  │     └─ 完整 Agent.Run() 循环（隔离）
+  ├─ SubagentStore.SaveCompleted(run)                       → 持久化
+  └─ return FormatSubagentResult(answer, ref)               → 父代理工具结果
+```
+
+## 一、子代理隔离
+
+| 隔离项 | 机制 |
+|--------|------|
+| Session | 独立 `Session`，不影响父代理 |
+| Tools | `FilterRegistry` 排除 meta-tools（task/run_skill/...） |
+| Context | 子代理 tool calls + reasoning 不进父 context |
+| Output | 仅 `FormatSubagentResult(answer, ref)` 返回给父代理 |
+
+## 二、SubagentMetaTools — 禁止递归
+
+```go
+// task.go:40
+func SubagentMetaTools() []string {
+    return []string{"task", "run_skill", "read_skill", "install_skill",
+                    "explore", "research", "review", "security_review"}
+}
+```
+
+子代理不能创建孙代理——防止无限递归。
+
+## 三、Continuation / Fork
+
+```
+task("step 1") → answer + ref="sa_001"
+task("step 2", continue_from="sa_001") → 同一子 session 继续
+task("alt approach", fork_from="sa_001") → 从 sa_001 分叉独立继续
+```
+
+- `continue_from` — 继承子代理上下文，累积工作
+- `fork_from` — 复制 transcript，独立分叉
+
+## 四、Planner vs Executor
+
+Plan 模式用两个代理：
+- **Planner**: `PlannerToolRegistry` — 仅只读研究工具
+- **Executor**: 完整工具集，接收 `planApprovedMessage`
+
+## 五、代码索引
+
+| 文件 | 行号 | 内容 |
+|------|------|------|
+| `internal/agent/task.go` | 30-40 | `SubagentMetaTools()` |
+| `internal/agent/task.go` | 340-418 | `FilterRegistry` / `PlannerToolRegistry` |
+| `internal/agent/subagent_store.go` | | 子代理 session 持久化 |
+| `internal/boot/boot.go` | 543-618 | `skillRunner`（子代理执行器） |
