@@ -49,5 +49,6 @@
 |------|------|
 | [workspace-file-list.md](04-capabilities/workspace-file-list.md) | `ListWorkspaceFiles()` — 全量工作区文件枚举 |
 | [steer-queue.md](04-capabilities/steer-queue.md) | `steerQueue` — Mid-Turn 消息队列机制与功能边界 |
+| [slash-commands.md](04-capabilities/slash-commands.md) | 指令系统完整参考 — 全部内置/管理/TUI/自定义指令的解读与场景 |
 
 > 按需补充：`SwitchBranch()`、Markdown `<a>` 拦截等可复用能力。
