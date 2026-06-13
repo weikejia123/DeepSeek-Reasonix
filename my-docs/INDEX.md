@@ -85,13 +85,32 @@
 
 ## 30-39 · 03-feature-action（功能设计与实施）
 
+> 大功能用子目录管理全流程文档（`hope/`、`next-feature/`），小功能/单文件 bug 分析沿用 `YYYYMMDD-` 日期前缀放在根目录。
+
+### 单文件
+
 | 文件 | 说明 |
 |------|------|
 | [20260613-对话文件链接导航.md](03-feature-action/20260613-对话文件链接导航.md) | 对话文件链接导航 — 设计草案 → 实施实录 |
 | [20260613-文件链接导航回归分析.md](03-feature-action/20260613-文件链接导航回归分析.md) | 文件链接导航 — 回归影响分析 |
 | [20260613-Git分支显示Bug分析.md](03-feature-action/20260613-Git分支显示Bug分析.md) | 顶部 git 分支显示 bug 分析 |
-| [20260613-Hope指令设计草案.md](03-feature-action/20260613-Hope指令设计草案.md) | Hope 指令功能设计草案 |
 | [20260614-file-tree-refresh-bug.md](03-feature-action/20260614-file-tree-refresh-bug.md) | Bug 分析 — Turn 完成后文件树不显示新文件 |
+
+### 子目录 · hope/
+
+| 文档 | 说明 |
+|------|------|
+| [00-设计草案.md](03-feature-action/hope/00-设计草案.md) | Hope 指令功能设计草案 & 初步可行性评估 |
+| [01-可行性分析.md](03-feature-action/hope/01-可行性分析.md) | 基于 24 个源文件逐行追踪的全面诊断，精确到行号级 |
+
+### 子目录 · aloop/
+
+| 文档 | 说明 |
+|------|------|
+| [01-Desktop-Loop-评估.md](03-feature-action/aloop/01-Desktop-Loop-评估.md) | Desktop Loop 改造评估 — 与 Goal 共存互补的 aloop 方案 |
+| [02-Desktop设计.md](03-feature-action/aloop/02-Desktop设计.md) | aloop 桌面端详细设计 — 配置驱动 + Controller + Desktop UI + 兼容策略 |
+| [03-MVP文件驱动设计.md](03-feature-action/aloop/03-MVP文件驱动设计.md) | aloop MVP 简化方案 — .aloop/ 文件驱动，3 文件改动，不过度设计 |
+| [04-脚本驱动设计.md](03-feature-action/aloop/04-脚本驱动设计.md) | aloop 最终简化版 — .aloop/main.* 脚本驱动，开关式，零配置 |
 
 ## 40-49 · 04-capabilities（基础能力清单）
 
