@@ -63,3 +63,4 @@ Thumbs.db
 /.gshare
 benchmarks/context-maintenance-e2e/run/
 desktop/wails.json
+.aloop/main.sh
