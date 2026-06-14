@@ -104,6 +104,11 @@ type Controller struct {
 	reg       *tool.Registry
 	pluginCtx context.Context
 
+	// slashHandlers lets frontends register custom slash verbs that execute
+	// immediately instead of expanding to a prompt. The handler receives everything
+	// after the command name and returns an error if the invocation failed.
+	slashHandlers map[string]func(args string) error
+
 	// Checkpoints (snapshot-based rewind). cp is the per-session store rebound when
 	// the session path changes; cpRoot is the workspace root used to guard restore
 	// writes. cpTurn is the monotonic turn counter (decoupled from the store so it
@@ -888,6 +893,17 @@ func (c *Controller) submit(input, display string) {
 		if c.managementNotice(trimmed) {
 			return
 		}
+		// Frontend-registered slash handlers run immediately (e.g. /sendtab).
+		if h, ok := c.slashHandlers[strings.TrimPrefix(fields[0], "/")]; ok {
+			args := ""
+			if len(fields) > 1 {
+				args = strings.TrimSpace(trimmed[len(fields[0]):])
+			}
+			if err := h(args); err != nil {
+				c.notice(err.Error())
+			}
+			return
+		}
 		// A custom command wins over a skill of the same name; both resolve to a
 		// turn. (Built-in slash verbs like /compact are handled above.)
 		if sent, ok := c.CustomCommand(trimmed); ok {
@@ -1138,6 +1154,37 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 	if pending.reply != nil {
 		pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
 	}
+}
+
+// AddTool registers a tool with the controller's live tool registry. Desktop-only
+// tools (like sendtab) use this to inject themselves into each tab's toolset after
+// the controller is built, so they are available on the next turn without
+// rebuilding the entire controller.
+func (c *Controller) AddTool(t tool.Tool) {
+	if c.reg != nil && t != nil {
+		c.reg.Add(t)
+	}
+}
+
+// AddCommand appends a custom slash command to the controller's command list. It
+// is used by frontends (e.g. desktop) to surface frontend-specific slash verbs in
+// the composer's slash menu.
+func (c *Controller) AddCommand(cmd command.Command) {
+	c.commands = append(c.commands, cmd)
+}
+
+// AddSlashHandler registers a slash verb that executes immediately instead of
+// expanding to a prompt. The handler receives the argument text after the command
+// name. If it returns an error, a notice is emitted. Frontends use this for verbs
+// whose effect should happen in the same user action (e.g. /sendtab).
+func (c *Controller) AddSlashHandler(name string, handler func(args string) error) {
+	if name == "" || handler == nil {
+		return
+	}
+	if c.slashHandlers == nil {
+		c.slashHandlers = make(map[string]func(args string) error)
+	}
+	c.slashHandlers[name] = handler
 }
 
 // EnableInteractiveApproval swaps the executor's gate for one that routes

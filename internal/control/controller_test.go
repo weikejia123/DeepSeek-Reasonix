@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,6 +268,52 @@ func TestSubmitClearDiscardsCurrentContextWithoutSavingTranscript(t *testing.T) 
 	current := exec.Session().Snapshot()
 	if len(current) != 1 || current[0].Role != provider.RoleSystem || current[0].Content != "sys" {
 		t.Fatalf("cleared context = %+v, want only system prompt", current)
+	}
+}
+
+func TestSlashHandlerRunsImmediately(t *testing.T) {
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SystemPrompt: "sys"})
+
+	var called bool
+	var gotArgs string
+	c.AddSlashHandler("sendtab", func(args string) error {
+		called = true
+		gotArgs = args
+		return nil
+	})
+
+	c.submit("/sendtab dev hello world", "")
+	if !called {
+		t.Fatal("slash handler was not called")
+	}
+	if gotArgs != "dev hello world" {
+		t.Fatalf("handler args = %q, want %q", gotArgs, "dev hello world")
+	}
+}
+
+func TestSlashHandlerErrorEmitsNotice(t *testing.T) {
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	var notices []string
+	c := New(Options{Executor: exec, SystemPrompt: "sys", Sink: event.FuncSink(func(e event.Event) {
+		if e.Kind == event.Notice {
+			notices = append(notices, e.Text)
+		}
+	})})
+	c.AddSlashHandler("boom", func(args string) error { return errors.New("it blew up") })
+
+	c.submit("/boom x", "")
+	found := false
+	for _, n := range notices {
+		if strings.Contains(n, "it blew up") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected notice containing error, got %v", notices)
 	}
 }
 
