@@ -798,6 +798,9 @@ type AgentConfig struct {
 	// ColdResumePrune elides stale tool results when a session reopens past the
 	// provider cache window. nil = default enabled.
 	ColdResumePrune *bool `toml:"cold_resume_prune"`
+	// DisableProjectChecks disables the project checks extracted from host docs.
+	// When true, the agent will not require running project checks before final answer.
+	DisableProjectChecks bool `toml:"disable_project_checks"`
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's

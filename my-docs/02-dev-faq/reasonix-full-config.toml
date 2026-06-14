@@ -1,0 +1,548 @@
+# Reasonix 完整配置文件示例
+# 配置文件位置: ~/.config/reasonix/reasonix.toml
+# 更新时间: 2026-06-14 16:00:00
+# 作者: Wake.J
+# 团队: DZSOFT
+#
+# 说明：此文件包含 Reasonix 所有可配置项的详细说明
+# 未配置的项将使用默认值
+
+# ============================================
+# 基础配置
+# ============================================
+
+# 配置版本号，用于未来兼容性检查
+config_version = 2
+
+# 默认使用的模型名称，对应 [[providers]] 中定义的 name
+default_model = "deepseek-flash"
+
+# UI/模型语言标签，如 "zh" 表示中文，空值表示自动检测（从 $LANG / $REASONIX_LANG）
+language = "zh"
+
+# ============================================
+# UI 配置 (CLI 界面)
+# ============================================
+[ui]
+
+# 主题模式: auto(自动)|dark(深色)|light(浅色)
+# 空值表示自动
+theme = "auto"
+
+# 主题风格: graphite|aurora|slate|carbon|nocturne|amber
+# 以及旧版别名（ember, midnight, sandstone, porcelain, linen, glacier）
+theme_style = "graphite"
+
+# 快捷键布局: classic(经典)|desktop(桌面)
+# 用于兼容性，Shift+Tab 切换 Plan 模式，Ctrl+Y 切换 YOLO 模式
+shortcut_layout = "classic"
+
+# 关闭行为（旧版桌面关闭行为，建议使用 desktop.close_behavior）
+close_behavior = ""
+
+# 是否显示推理文本: true(显示)|false(折叠)
+# Ctrl+O 或 /verbose 快捷键切换
+show_reasoning = false
+
+# ============================================
+# Desktop 配置 (桌面应用)
+# ============================================
+[desktop]
+
+# 语言: auto(自动)|en(英文)|zh(中文)
+# auto 表示根据浏览器/操作系统自动检测
+language = "auto"
+
+# 主题: auto(自动)|dark(深色)|light(浅色)
+theme = "dark"
+
+# 主题风格，同 [ui] 配置
+theme_style = "graphite"
+
+# 关闭窗口行为: quit(退出)|background(后台运行)
+close_behavior = "background"
+
+# 显示模式: standard(标准)|compact(紧凑)
+# 旧版 "minimal" 会映射为 compact
+display_mode = "standard"
+
+# 状态栏样式: icon(图标)|text(文本)
+status_bar_style = "text"
+
+# 状态栏显示项（有序列表）
+status_bar_items = ["model", "cost", "tokens", "compact"]
+
+# 启动时检查更新: true(开启)|false(关闭)|null(默认开启)
+check_updates = true
+
+# 匿名启动统计（安装ID + 版本 + 操作系统）: true(开启)|false(关闭)|null(默认开启)
+telemetry = true
+
+# 匿名聚合 Agent 指标（信号/桶计数，不包含内容）: true(开启)|false(关闭)|null(默认关闭)
+metrics = false
+
+# 设置 > 模型 > Access 中显示的 Provider 列表
+desktop.provider_access = ["deepseek-flash", "deepseek-pro"]
+
+# 推理文本默认展开: true(展开)|false(折叠)
+expand_thinking = false
+
+# ============================================
+# 通知配置
+# ============================================
+[notifications]
+
+# 总开关: true(开启)|false(关闭)
+enabled = false
+
+# 回合完成通知
+turn_done = true
+
+# 审批请求通知
+approval_request = true
+
+# 询问请求通知
+ask_request = true
+
+# ============================================
+# Agent 配置（核心配置）
+# ============================================
+[agent]
+
+# 系统提示词（内联定义）
+# 如果同时定义了 system_prompt 和 system_prompt_file，优先使用 system_prompt
+system_prompt = """
+You are Reasonix, a coding agent focused on executing code tasks.
+Use the provided tools to read and write files and run shell commands.
+"""
+
+# 系统提示词文件路径（相对或绝对路径）
+# 优先级低于内联 system_prompt
+system_prompt_file = ""
+
+# 每回合最大工具调用次数，0 表示无限制
+# 实际安全边界是用户取消和上下文压缩，而非回合数
+max_steps = 0
+
+# 规划器（Planner）只读工具调用最大次数，0 表示无限制
+# Planner 用于低频规划，保持独立的会话以实现缓存稳定
+planner_max_steps = 12
+
+# 温度参数（随机性），0-2 之间
+temperature = 0.7
+
+# 规划器模型名称，设置后启用双模型协作
+# Planner 处理规划，Executor 处理执行，各自保持缓存稳定的提示前缀
+planner_model = ""
+
+# 子代理默认模型，用于 runAs=subagent 的技能
+subagent_model = ""
+
+# 子代理模型映射（按技能名称覆盖）
+[agent.subagent_models]
+"skill-name" = "deepseek-pro"
+
+# 子代理默认 effort 级别
+subagent_effort = ""
+
+# 子代理 effort 映射（按技能名称覆盖）
+[agent.subagent_efforts]
+"skill-name" = "high"
+
+# 输出风格: explanatory(解释性)|learning(学习型)|concise(简洁)
+# 或自定义 .reasonix/output-styles/<name>.md 文件名
+# 空值表示使用未修改的提示词
+output_style = ""
+
+# 自动计划模式: off(手动)|on(自动启用审批门)
+# 旧版 "ask" 会被视为 "on"
+auto_plan = "off"
+
+# 推理语言偏好，空值/auto 表示跟随对话语言
+# 作为瞬态回合上下文应用，而非稳定提示词
+reasoning_language = ""
+
+# 自动计划分类器，指定用于分类边界自动计划决策的 Provider/模型
+# 空值保持零成本启发式路径
+auto_plan_classifier = ""
+
+# 上下文压缩窗口比例（软/紧凑/强制）
+# soft: 仅通知，compact: 触发压缩，force: 硬上限
+soft_compact_ratio = 0.5
+compact_ratio = 0.8
+compact_force_ratio = 0.9
+
+# 冷恢复剪枝: true(启用)|false(禁用)|null(默认启用)
+# 当会话在 Provider 缓存窗口后重新打开时，省略过时的工具结果
+cold_resume_prune = true
+
+# 禁用项目检查: true(禁用)|false(启用)
+# 设置为 true 时，Agent 不会在最终答案前要求运行项目检查
+disable_project_checks = false
+
+# ============================================
+# Provider 配置（模型提供商）
+# ============================================
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+balance_url = "https://api.deepseek.com/user/balance"
+context_window = 1000000
+no_proxy = false
+
+[providers.price]
+cache_hit = 0.02
+input = 1.0
+output = 2.0
+currency = "¥"
+
+[[providers]]
+name = "deepseek-pro"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro"
+api_key_env = "DEEPSEEK_API_KEY"
+balance_url = "https://api.deepseek.com/user/balance"
+context_window = 1000000
+no_proxy = false
+
+[providers.price]
+cache_hit = 0.025
+input = 3.0
+output = 6.0
+currency = "¥"
+
+# Provider 高级配置示例
+[[providers]]
+name = "custom-openai"
+kind = "openai"
+base_url = "https://api.example.com/v1"
+models = ["model-a", "model-b", "model-c"]
+default = "model-a"
+api_key_env = "CUSTOM_API_KEY"
+context_window = 128000
+
+# Thinking / Effort 配置（Provider 特定）
+thinking = "adaptive"  # anthropic: adaptive
+effort = "high"       # openai: low|medium|high, DeepSeek: high|max
+
+# 支持的 effort 级别列表
+supported_efforts = ["low", "medium", "high", "max"]
+default_effort = "medium"
+
+# 视觉能力
+vision = true
+vision_detail = "auto"  # low|high|auto
+
+# 推理协议
+reasoning_protocol = ""
+
+# ============================================
+# 工具配置
+# ============================================
+[tools]
+
+# 启用的工具列表，空值表示启用所有
+enabled = []
+
+# Bash 超时时间（秒），null 或负值使用默认值 120 秒
+# 0 表示禁用工具本地超时
+bash_timeout_seconds = 120
+
+[tools.search]
+# 搜索引擎: auto(自动)|native(Go 原生)|rg(ripgrep)
+engine = "auto"
+# ripgrep 二进制路径，空值表示 PATH 查找
+rg_path = ""
+
+[tools.shell]
+# 首选解释器: auto(自动)|bash|powershell|pwsh
+prefer = "auto"
+# Shell 可执行文件路径，空值表示 PATH 查找
+path = ""
+
+# ============================================
+# 权限配置
+# ============================================
+[permissions]
+
+# 默认模式: ask(询问)|allow(允许)|deny(拒绝)
+# 读取工具始终回退到 allow
+mode = "ask"
+
+# 允许规则列表（格式: "ToolName" 或 "ToolName(glob)"）
+allow = []
+
+# 询问规则列表
+ask = []
+
+# 拒绝规则列表（优先级最高）
+deny = []
+
+# ============================================
+# 沙箱配置
+# ============================================
+[sandbox]
+
+# 工作区根目录，空值表示当前工作目录
+# 文件写入工具（write_file/edit_file/multi_edit）只能修改此目录下的文件
+workspace_root = ""
+
+# 额外允许写入的目录列表
+allow_write = [
+    "/tmp",
+    "${HOME}/temp"
+]
+
+# Bash 沙箱模式: enforce(强制执行)|off(关闭)
+# enforce 会监禁每个命令（macOS 支持，其他系统优雅回退）
+bash = "enforce"
+
+# 允许沙箱内网络访问: true(允许)|false(拒绝)
+# 默认为 true，以便模块/包下载正常工作
+network = true
+
+# ============================================
+# 网络配置
+# ============================================
+[network]
+
+# 代理模式: auto(自动)|env(环境变量)|custom(自定义)|off(关闭)
+# auto 目前使用环境代理，未来可能支持操作系统代理检测
+proxy_mode = "auto"
+
+# 自定义代理 URL，如 "socks5://127.0.0.1:7890"
+# 当 proxy_mode = "custom" 时生效
+proxy_url = ""
+
+# 不代理的主机列表（自定义代理时生效）
+no_proxy = ""
+
+[network.proxy]
+# 代理类型: http|https|socks5|socks5h
+type = "http"
+server = "127.0.0.1"
+port = 7890
+username = ""
+# 密码支持 ${VAR} 扩展，避免明文存储
+password = ""
+
+# ============================================
+# 插件配置（MCP 服务器）
+# ============================================
+
+[[plugins]]
+name = "example-stdio"
+type = "stdio"  # stdio|http|sse
+command = "node"
+args = ["/path/to/server.js"]
+
+[plugins.env]
+API_KEY = "${EXAMPLE_API_KEY}"
+
+# 自动启动: true(自动)|false(手动)|null(默认自动)
+auto_start = true
+
+# 启动层级: eager(急切)|lazy(延迟)|background(后台)
+# eager: 启动时阻塞直到握手完成
+# lazy: 首次使用时才启动
+# background: 后台启动但不等待
+tier = "background"
+
+[[plugins]]
+name = "example-http"
+type = "http"
+url = "https://api.example.com/mcp"
+
+[plugins.headers]
+Authorization = "Bearer ${API_TOKEN}"
+
+# ============================================
+# 技能配置
+# ============================================
+[skills]
+
+# 自定义技能根目录列表（每个目录包含 SKILL.md / <name>.md）
+# 支持 ~、相对路径和 ${VAR} 扩展
+paths = [
+    "${HOME}/.reasonix/custom-skills"
+]
+
+# 排除的技能发现路径
+excluded_paths = []
+
+# 禁用的技能名称列表（隐藏但可管理）
+disabled_skills = []
+
+# 最大发现深度（1-5，默认 3）
+max_depth = 3
+
+# ============================================
+# CodeGraph 配置
+# ============================================
+[codegraph]
+
+# 启用 CodeGraph: true(启用)|false(禁用)
+enabled = true
+
+# 自动安装: true(自动下载)|false(手动安装)
+auto_install = true
+
+# CodeGraph 二进制路径，空值自动解析
+path = ""
+
+# 启动层级（已弃用，始终使用 background）
+tier = "background"
+
+# ============================================
+# 内置 MCP 配置
+# ============================================
+[builtin_mcp]
+
+# 启用时间工具
+time_enabled = true
+
+# 启用 Context7 工具
+context7_enabled = false
+
+# ============================================
+# 状态栏配置
+# ============================================
+[statusline]
+
+# 自定义状态栏命令
+# 每回合后运行，stdout 第一行替换内置状态数据
+# JSON 负载（model, context tokens, cwd）通过 stdin 传入
+command = ""
+
+# ============================================
+# LSP 配置
+# ============================================
+[lsp]
+
+# 启用 LSP 工具: true(启用)|false(禁用)
+enabled = true
+
+[lsp.servers]
+# 自定义或覆盖语言服务器配置
+[lsp.servers.go]
+command = "gopls"
+args = ["serve"]
+language_id = "go"
+extensions = [".go"]
+install_hint = "go install golang.org/x/tools/gopls@latest"
+
+[lsp.servers.rust]
+command = "rust-analyzer"
+language_id = "rust"
+extensions = [".rs"]
+install_hint = "rustup component add rust-analyzer"
+
+# ============================================
+# Bot 配置（IM 消息网关）
+# ============================================
+[bot]
+
+# 总开关
+enabled = false
+
+# Bot 使用的模型，空值使用 default_model
+model = ""
+
+# 工具审批模式: ask(询问)|allow(允许)|deny(拒绝)
+tool_approval_mode = "ask"
+
+# 最大步数
+max_steps = 25
+
+# 消息合并窗口（毫秒）
+debounce_ms = 1500
+
+[bot.allowlist]
+# 白名单开关
+enabled = true
+# 允许所有用户
+allow_all = false
+# QQ 用户列表
+qq_users = []
+# 飞书用户列表
+feishu_users = []
+# 微信用户列表
+weixin_users = []
+# QQ 群组列表
+qq_groups = []
+# 飞书群组列表
+feishu_groups = []
+# 微信群组列表
+weixin_groups = []
+
+[bot.qq]
+enabled = false
+app_id = ""
+app_secret_env = "QQ_BOT_APP_SECRET"
+
+[bot.feishu]
+enabled = false
+# 域名: feishu(默认)|lark
+domain = "feishu"
+app_id = ""
+app_secret_env = "FEISHU_BOT_APP_SECRET"
+# 事件订阅验证 token
+verification_token = ""
+# 模式: webhook(默认)|websocket
+mode = "webhook"
+# Webhook 模式端口
+webhook_port = 8080
+# 需要 @ 提及
+require_mention = true
+
+[bot.weixin]
+enabled = false
+account_id = "default"
+token_env = "WEIXIN_BOT_TOKEN"
+api_base = "https://ilinkai.weixin.qq.com"
+
+# Bot 连接配置（桌面友好格式）
+[[bot.connections]]
+id = "conn-1"
+provider = "feishu"
+domain = "feishu"
+label = "My Feishu Bot"
+enabled = true
+status = "disconnected"  # disconnected|pending|connected|error
+model = ""
+tool_approval_mode = "ask"
+workspace_root = ""
+
+[bot.connections.credential]
+app_id = ""
+app_secret_env = "FEISHU_BOT_APP_SECRET"
+account_id = ""
+token_env = ""
+
+[[bot.connections.session_mappings]]
+remote_id = "group-id-123"
+session_id = "session-uuid"
+scope = "group"
+workspace_root = "/path/to/project"
+updated_at = ""
+
+# ============================================
+# 使用说明
+# ============================================
+# 1. 将此文件复制到 ~/.config/reasonix/reasonix.toml
+# 2. 根据需要修改配置项
+# 3. 重启 Reasonix 生效
+#
+# 配置加载优先级（从高到低）：
+# 1. 项目级 reasonix.toml（工作区根目录）
+# 2. 用户级 ~/.config/reasonix/reasonix.toml
+# 3. 内置默认值
+#
+# 环境变量扩展：
+# - 所有字符串字段支持 ${VAR} 和 ${VAR:-default} 语法
+# - 示例: api_key_env = "${API_KEY}" 或 password = "${PASS:-default}"

@@ -825,18 +825,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	execSess := agent.NewSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:          maxSteps,
-		Temperature:       cfg.Agent.Temperature,
-		Pricing:           entry.Price,
-		Gate:              headlessGate,
-		Hooks:             hookRunner,
-		Jobs:              jm,
-		ProjectChecks:     projectChecks,
-		ContextWindow:     entry.ContextWindow,
-		SoftCompactRatio:  cfg.Agent.SoftCompactRatio,
-		CompactRatio:      cfg.Agent.CompactRatio,
-		CompactForceRatio: cfg.Agent.CompactForceRatio,
-		ArchiveDir:        config.ArchiveDir(),
+		MaxSteps:             maxSteps,
+		Temperature:          cfg.Agent.Temperature,
+		Pricing:              entry.Price,
+		Gate:                 headlessGate,
+		Hooks:                hookRunner,
+		Jobs:                 jm,
+		ProjectChecks:        projectChecks,
+		DisableProjectChecks: cfg.Agent.DisableProjectChecks,
+		ContextWindow:        entry.ContextWindow,
+		SoftCompactRatio:     cfg.Agent.SoftCompactRatio,
+		CompactRatio:         cfg.Agent.CompactRatio,
+		CompactForceRatio:    cfg.Agent.CompactForceRatio,
+		ArchiveDir:           config.ArchiveDir(),
 	}, sink)
 
 	var runner agent.Runner = executor

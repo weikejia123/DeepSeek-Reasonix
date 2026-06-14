@@ -250,7 +250,8 @@ type Agent struct {
 
 	// projectChecks are structured project instructions that complete_step can
 	// verify against same-turn bash receipts after a write-backed completion.
-	projectChecks []instruction.VerifyCheck
+	projectChecks        []instruction.VerifyCheck
+	disableProjectChecks bool
 
 	// memQueue, when non-nil, lets the remember/forget tools fold a turn-tail note
 	// about a just-made memory change into the next turn, so it applies this
@@ -469,6 +470,8 @@ type Options struct {
 
 	// ProjectChecks are host-observable structured checks extracted during boot.
 	ProjectChecks []instruction.VerifyCheck
+	// DisableProjectChecks disables the project checks requirement before final answer.
+	DisableProjectChecks bool
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -504,25 +507,26 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxStepsKey = "agent.max_steps"
 	}
 	return &Agent{
-		prov:              prov,
-		tools:             tools,
-		session:           session,
-		maxSteps:          opts.MaxSteps,
-		maxStepsKey:       maxStepsKey,
-		temperature:       opts.Temperature,
-		pricing:           opts.Pricing,
-		sink:              sink,
-		gate:              gate,
-		hooks:             hooks,
-		jobs:              opts.Jobs,
-		evidence:          evidence.NewLedger(),
-		projectChecks:     append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		contextWindow:     opts.ContextWindow,
-		softCompactRatio:  opts.SoftCompactRatio,
-		compactRatio:      opts.CompactRatio,
-		compactForceRatio: opts.CompactForceRatio,
-		recentKeep:        opts.RecentKeep,
-		archiveDir:        opts.ArchiveDir,
+		prov:                 prov,
+		tools:                tools,
+		session:              session,
+		maxSteps:             opts.MaxSteps,
+		maxStepsKey:          maxStepsKey,
+		temperature:          opts.Temperature,
+		pricing:              opts.Pricing,
+		sink:                 sink,
+		gate:                 gate,
+		hooks:                hooks,
+		jobs:                 opts.Jobs,
+		evidence:             evidence.NewLedger(),
+		projectChecks:        append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		disableProjectChecks: opts.DisableProjectChecks,
+		contextWindow:        opts.ContextWindow,
+		softCompactRatio:     opts.SoftCompactRatio,
+		compactRatio:         opts.CompactRatio,
+		compactForceRatio:    opts.CompactForceRatio,
+		recentKeep:           opts.RecentKeep,
+		archiveDir:           opts.ArchiveDir,
 	}
 }
 
@@ -726,13 +730,16 @@ func (a *Agent) finalReadinessCheck() finalReadinessCheck {
 		}
 		return out
 	}
-	hasProjectChecks := len(a.projectChecks) > 0
+	hasProjectChecks := len(a.projectChecks) > 0 && !a.disableProjectChecks
 	hasTodoReceipt := a.evidence.HasSuccessfulTodoWrite()
 	if !hasProjectChecks && !hasTodoReceipt && len(missing) == 0 {
 		return finalReadinessCheck{}
 	}
 	out.applies = true
 	for _, check := range a.projectChecks {
+		if a.disableProjectChecks {
+			break
+		}
 		command := strings.TrimSpace(check.Command)
 		if command == "" {
 			continue

@@ -414,20 +414,31 @@ ProjectChecks:     []instruction.VerifyCheck{},
 - Project Checks 检查被完全跳过
 - 只有 Todo 检查（如果存在）会继续进行
 
-### 环境变量方案（更灵活）
+### 配置文件方案（推荐）
 
-如果你想保留配置灵活性，可以添加一个简单的环境变量控制：
+现在支持通过配置文件 `~/.config/reasonix/reasonix.toml` 来控制：
 
-```go
-// internal/boot/boot.go:834
-projectChecksToUse := projectChecks
-if os.Getenv("REASONIX_DISABLE_PROJECT_CHECKS") == "1" {
-    projectChecksToUse = nil
-}
-// ... 然后在 Options 中使用 projectChecksToUse
+```toml
+[agent]
+disable_project_checks = true
 ```
 
-这样用户可以通过设置环境变量 `REASONIX_DISABLE_PROJECT_CHECKS=1` 来临时关闭，无需重新编译。
+**配置项说明**：
+- `disable_project_checks` (bool): 设置为 `true` 时，禁用 Project Checks 检查
+- 默认为 `false`，保持原有行为
+
+**修改后的代码位置**：
+- `internal/config/config.go:801-803`: `AgentConfig` 中添加 `DisableProjectChecks` 字段
+- `internal/agent/agent.go:253-254`: `Agent` 结构体添加 `disableProjectChecks` 字段
+- `internal/agent/agent.go:470-471`: `Options` 结构体添加 `DisableProjectChecks` 字段
+- `internal/agent/agent.go:522`: `New` 函数中初始化
+- `internal/agent/agent.go:731`: `finalReadinessCheck` 中使用配置
+- `internal/boot/boot.go:834`: 传递配置到 Agent
+
+**效果**：
+- 无需修改前端配置窗口
+- 通过配置文件即可控制
+- 支持 Desktop App 和 TUI 两种启动方式
 
 ---
 
