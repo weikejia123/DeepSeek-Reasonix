@@ -18,7 +18,7 @@ import { useScrollManager } from "../lib/useScrollManager";
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
-type QuestionAnchor = { id: string; text: string; turn: number };
+type QuestionAnchor = { id: string; text: string; turn: number; isALoop?: boolean };
 
 const QUESTION_NAV_MIN_COUNT = 2;
 const LiveStreamContext = createContext<LiveStream | undefined>(undefined);
@@ -174,9 +174,11 @@ export const Transcript = memo(function Transcript({
   const questions = useMemo<QuestionAnchor[]>(() => {
     const anchors: QuestionAnchor[] = [];
     let turn = 0;
+    const ALOOP_PREFIX = "A-Loop: ";
     for (const it of items) {
       if (it.kind !== "user") continue;
-      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn });
+      const isALoop = it.text.startsWith(ALOOP_PREFIX);
+      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn, isALoop });
       turn += 1;
     }
     return anchors;
@@ -1020,14 +1022,17 @@ function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnchor[]; o
   const dotProps = (
     idx: number,
     turn: number,
+    isALoop?: boolean,
   ): { style: CSSProperties; "data-d"?: string } => {
     const isActive = active === turn;
+    // A-Loop messages always show in red
+    const aLoopBackground = isALoop ? "var(--accent-red, #ff4d4f)" : undefined;
     if (hoverIdx < 0) {
-      return { style: { width: isActive ? 18 : 12, background: isActive ? "var(--accent)" : undefined } };
+      return { style: { width: isActive ? 18 : 12, background: aLoopBackground ?? (isActive ? "var(--accent)" : undefined) } };
     }
     const d = Math.abs(idx - hoverIdx);
     const width = d === 0 ? 32 : d === 1 ? 20 : d === 2 ? 14 : isActive ? 18 : 12;
-    const background = d <= 2 ? undefined : isActive ? "var(--accent)" : undefined;
+    const background = aLoopBackground ?? (d <= 2 ? undefined : isActive ? "var(--accent)" : undefined);
     return {
       style: { width, transitionDelay: `${d * 20}ms`, background },
       "data-d": d <= 2 ? String(d) : undefined,
@@ -1059,7 +1064,7 @@ function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnchor[]; o
               if (e.detail === 0) scrollTo(question);
             }}
           >
-            <span className="jump-dot" {...dotProps(index, question.turn)} />
+            <span className="jump-dot" {...dotProps(index, question.turn, question.isALoop)} />
           </button>
         ))}
       </div>
