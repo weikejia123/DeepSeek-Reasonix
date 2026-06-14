@@ -1062,9 +1062,9 @@ func (a *App) buildTabController(tab *WorkspaceTab) {
 	}
 
 	// Register desktop-only sendtab tool for cross-tab messaging.
-	ctrl.AddTool(newSendTabTool(a))
+	ctrl.AddTool(newSendTabTool(a, tab.ID))
 	ctrl.AddCommand(newSendTabCommand())
-	ctrl.AddSlashHandler(sendtabName, newSendTabSlashHandler(a))
+	ctrl.AddSlashHandler(sendtabName, newSendTabSlashHandler(a, tab.ID))
 
 	a.mu.Lock()
 	tab.Ctrl = ctrl

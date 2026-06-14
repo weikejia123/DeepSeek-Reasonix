@@ -18,7 +18,7 @@ import { useScrollManager } from "../lib/useScrollManager";
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
-type QuestionAnchor = { id: string; text: string; turn: number; isALoop?: boolean };
+type QuestionAnchor = { id: string; text: string; turn: number; isALoop?: boolean; isMessageFromTab?: boolean };
 
 const QUESTION_NAV_MIN_COUNT = 2;
 const LiveStreamContext = createContext<LiveStream | undefined>(undefined);
@@ -175,10 +175,12 @@ export const Transcript = memo(function Transcript({
     const anchors: QuestionAnchor[] = [];
     let turn = 0;
     const ALOOP_PREFIX = "A-Loop: ";
+    const MESSAGE_FROM_TAB_PREFIX = "MessageFromTab[";
     for (const it of items) {
       if (it.kind !== "user") continue;
       const isALoop = it.text.startsWith(ALOOP_PREFIX);
-      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn, isALoop });
+      const isMessageFromTab = it.text.startsWith(MESSAGE_FROM_TAB_PREFIX);
+      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn, isALoop, isMessageFromTab });
       turn += 1;
     }
     return anchors;
@@ -1023,16 +1025,21 @@ function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnchor[]; o
     idx: number,
     turn: number,
     isALoop?: boolean,
+    isMessageFromTab?: boolean,
   ): { style: CSSProperties; "data-d"?: string } => {
     const isActive = active === turn;
-    // A-Loop messages always show in red
-    const aLoopBackground = isALoop ? "var(--accent-red, #ff4d4f)" : undefined;
+    // A-Loop messages always show in red; cross-tab messages show in blue.
+    const accentBackground = isALoop
+      ? "var(--accent-red, #ff4d4f)"
+      : isMessageFromTab
+        ? "var(--accent-blue, #3d7be0)"
+        : undefined;
     if (hoverIdx < 0) {
-      return { style: { width: isActive ? 18 : 12, background: aLoopBackground ?? (isActive ? "var(--accent)" : undefined) } };
+      return { style: { width: isActive ? 18 : 12, background: accentBackground ?? (isActive ? "var(--accent)" : undefined) } };
     }
     const d = Math.abs(idx - hoverIdx);
     const width = d === 0 ? 32 : d === 1 ? 20 : d === 2 ? 14 : isActive ? 18 : 12;
-    const background = aLoopBackground ?? (d <= 2 ? undefined : isActive ? "var(--accent)" : undefined);
+    const background = accentBackground ?? (d <= 2 ? undefined : isActive ? "var(--accent)" : undefined);
     return {
       style: { width, transitionDelay: `${d * 20}ms`, background },
       "data-d": d <= 2 ? String(d) : undefined,
@@ -1064,7 +1071,7 @@ function QuestionJumpBar({ questions, onJump }: { questions: QuestionAnchor[]; o
               if (e.detail === 0) scrollTo(question);
             }}
           >
-            <span className="jump-dot" {...dotProps(index, question.turn, question.isALoop)} />
+            <span className="jump-dot" {...dotProps(index, question.turn, question.isALoop, question.isMessageFromTab)} />
           </button>
         ))}
       </div>

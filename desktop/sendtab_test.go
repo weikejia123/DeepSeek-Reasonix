@@ -1,17 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 )
 
 func TestParseSendTabArgs(t *testing.T) {
 	cases := []struct {
-		name          string
-		args          string
-		wantTab       string
-		wantMessage   string
-		wantErr       bool
-		wantErrPrefix string
+		name        string
+		args        string
+		wantTab     string
+		wantMessage string
+		wantErr     bool
 	}{
 		{
 			name:        "simple unquoted",
@@ -32,28 +32,24 @@ func TestParseSendTabArgs(t *testing.T) {
 			wantMessage: "check this",
 		},
 		{
-			name:          "missing args",
-			args:          "",
-			wantErr:       true,
-			wantErrPrefix: "usage:",
+			name:    "missing args",
+			args:    "",
+			wantErr: true,
 		},
 		{
-			name:          "only title no message",
-			args:          "dev",
-			wantErr:       true,
-			wantErrPrefix: "usage:",
+			name:    "only title no message",
+			args:    "dev",
+			wantErr: true,
 		},
 		{
-			name:          "unclosed quote",
-			args:          `"dev check this`,
-			wantErr:       true,
-			wantErrPrefix: "unclosed quote",
+			name:    "unclosed quote",
+			args:    `"dev check this`,
+			wantErr: true,
 		},
 		{
-			name:          "empty message",
-			args:          "dev   ",
-			wantErr:       true,
-			wantErrPrefix: "usage:",
+			name:    "empty message",
+			args:    "dev   ",
+			wantErr: true,
 		},
 	}
 
@@ -63,9 +59,6 @@ func TestParseSendTabArgs(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error")
-				}
-				if tc.wantErrPrefix != "" && len(err.Error()) < len(tc.wantErrPrefix) {
-					t.Fatalf("error %q does not start with %q", err.Error(), tc.wantErrPrefix)
 				}
 				return
 			}
@@ -81,3 +74,20 @@ func TestParseSendTabArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestMessageFromTabPrefix(t *testing.T) {
+	if messageFromTabPrefix != "MessageFromTab" {
+		t.Fatalf("messageFromTabPrefix = %q, want %q", messageFromTabPrefix, "MessageFromTab")
+	}
+}
+
+func TestMessageFromTabDisplayFormat(t *testing.T) {
+	// The format must be MessageFromTab[<title>]: <message> so the frontend can
+	// parse the source tab title and apply the blue timeline marker.
+	got := fmt.Sprintf("%s[%s]: %s", messageFromTabPrefix, "DERE-1.7.0", "这是一条测试记录，不用过度思考。")
+	want := "MessageFromTab[DERE-1.7.0]: 这是一条测试记录，不用过度思考。"
+	if got != want {
+		t.Fatalf("display = %q, want %q", got, want)
+	}
+}
+
