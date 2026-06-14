@@ -127,6 +127,7 @@ export interface TabMeta {
   workspaceName: string;
   topicId: string;
   topicTitle: string;
+  sessionPath?: string;
   filePath?: string;
   projectColor?: string;
   label: string;
@@ -146,10 +147,11 @@ export interface TabMeta {
 
 export interface ProjectNode {
   key: string;
-  kind: "project" | "topic" | "global_folder" | "global_topic";
+  kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session";
   label: string;
   root?: string;
   topicId?: string;
+  sessionPath?: string;
   projectColor?: string;
   turns?: number;
   createdAt?: number;
@@ -157,10 +159,11 @@ export interface ProjectNode {
   open?: boolean;
   running?: boolean;
   status?: ProjectTopicStatus;
+  pinned?: boolean;
   children?: ProjectNode[];
 }
 
-export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "paused" | "error";
+export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "background_job" | "paused" | "error";
 
 export interface TopicMeta {
   id: string;
@@ -227,6 +230,20 @@ export interface HistoryToolCall {
   id: string;
   name: string;
   arguments: string;
+}
+
+export interface PromptHistoryEntry {
+  text: string;
+  at: number;          // unix ms
+  sessionPath: string;
+  turn: number;
+}
+
+export interface PromptHistoryResult {
+  entries: PromptHistoryEntry[] | null;
+  nonce: string;
+  olderCursor?: string;
+  hasOlder?: boolean;
 }
 
 // CheckpointMeta is one rewind point (a user turn) for the rewind UI.
@@ -473,6 +490,23 @@ export interface CapabilitiesView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
 }
+export interface BuiltInMCPUpdateResult {
+  name: string;
+  version: string;
+  path: string;
+}
+
+export type BuiltInMCPUpdatePhase = "current" | "available" | "downloaded" | "activated" | "skipped" | "error";
+
+export interface BuiltInMCPUpdateStatus {
+  name: string;
+  mode: string;
+  current: string;
+  latest: string;
+  phase: BuiltInMCPUpdatePhase;
+  path?: string;
+  err?: string;
+}
 export interface MCPServerInput {
   name: string;
   transport: string; // stdio | http | sse
@@ -668,6 +702,7 @@ export interface QQBotView {
   appId: string;
   appSecretEnv: string;
   secretSet: boolean;
+  sandbox: boolean;
 }
 
 export interface FeishuBotView {
@@ -701,6 +736,10 @@ export interface BotConnectionCredentialView {
 export interface BotConnectionSessionMappingView {
   remoteId: string;
   sessionId: string;
+  sessionSource: string;
+  chatType: string;
+  userId: string;
+  threadId: string;
   scope: "global" | "project" | string;
   workspaceRoot: string;
   updatedAt: string;
@@ -789,6 +828,11 @@ export interface BotConnectionDiagnostic {
   status: string;
   message: string;
   messageId: string;
+  phase: string;
+  code: string;
+  reportKind: string;
+  reportDetail: string;
+  occurredAt: string;
 }
 
 export interface SettingsView {
@@ -805,6 +849,7 @@ export interface SettingsView {
   agent: AgentView;
   bot: BotSettingsView;
   desktopLanguage: string; // "" | "en" | "zh"; empty = auto
+  desktopLayoutStyle: string; // "classic" | "workbench"
   desktopTheme: string; // "auto" | "dark" | "light"
   desktopThemeStyle: string;
   closeBehavior: string; // "background" | "quit"
