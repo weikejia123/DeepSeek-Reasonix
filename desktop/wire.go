@@ -130,6 +130,7 @@ var kindNames = map[event.Kind]string{
 	event.MCPSurfaceReady:   "mcp_surface_ready",
 	event.Retrying:          "retrying",
 	event.Steer:             "steer",
+	event.UserMessage:       "user_message",
 }
 
 // toWireAsk converts an event.Ask into its JSON wire form.

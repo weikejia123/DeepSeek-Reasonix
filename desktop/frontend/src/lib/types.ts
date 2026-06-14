@@ -18,7 +18,8 @@ export type EventKind =
   | "compaction_started"
   | "compaction_done"
   | "retrying"
-  | "steer";
+  | "steer"
+  | "user_message";
 
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"

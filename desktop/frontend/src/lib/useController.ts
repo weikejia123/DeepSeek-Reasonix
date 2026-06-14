@@ -437,6 +437,19 @@ function applyEvent(s: State, e: WireEvent): State {
     }
     case "steer":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `s${s.seq}`, level: "info", text: `↪ ${e.text ?? ""}` }] };
+    case "user_message":
+      // Backend-initiated user message (e.g., A-Loop) — display as a user bubble
+      // and mark running so the UI shows the turn is in progress.
+      return {
+        ...s,
+        seq: s.seq + 1,
+        items: [...s.items, { kind: "user", id: `u${s.seq}`, text: e.text ?? "" }],
+        running: true,
+        turnStartAt: Date.now(),
+        turnTokens: 0,
+        turnTotalTokens: 0,
+        turnCost: 0,
+      };
     case "approval_request": return { ...s, approval: e.approval };
     case "ask_request": return { ...s, ask: e.ask };
     case "turn_done": {
@@ -699,7 +712,8 @@ export function useController() {
         e.kind === "message" ||
         e.kind === "tool_dispatch" ||
         e.kind === "tool_progress" ||
-        e.kind === "tool_result"
+        e.kind === "tool_result" ||
+        e.kind === "user_message"
       ) {
         lastTurnActivityAtByTab.current.set(targetTabId, Date.now());
       }

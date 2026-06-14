@@ -174,9 +174,9 @@ func TestToWireSteer(t *testing.T) {
 }
 
 func TestKindNamesComplete(t *testing.T) {
-	// Steer is the last Kind; every value through it must have a wire name,
+	// UserMessage is the last Kind; every value through it must have a wire name,
 	// or toWire emits kind:"" and the frontend reducer falls through to undefined.
-	for k := event.Kind(0); k <= event.Steer; k++ {
+	for k := event.Kind(0); k <= event.UserMessage; k++ {
 		if kindNames[k] == "" {
 			t.Errorf("kind %d has no wire name — toWire would emit kind:\"\"", k)
 		}

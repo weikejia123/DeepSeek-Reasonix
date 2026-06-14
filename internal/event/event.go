@@ -88,6 +88,11 @@ const (
 	// wrapper prefix), so a frontend can display it to the user as confirmation.
 	// Frontends use Steer to know a queued message has been delivered.
 	Steer
+	// UserMessage fires when a user message is sent from the backend (e.g., A-Loop).
+	// Text carries the message content. Frontends should display it as a user bubble.
+	// This allows backend-initiated messages to appear in the conversation like
+	// normal user input.
+	UserMessage
 )
 
 // Level classifies a Notice so sinks can style or filter it.

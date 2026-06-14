@@ -3241,6 +3241,9 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 		if text == "" {
 			continue
 		}
+		// Emit UserMessage event first so frontend shows the user bubble,
+		// then submit the turn. This mirrors normal user input flow.
+		c.sink.Emit(event.Event{Kind: event.UserMessage, Text: text})
 		c.SubmitDisplay("A-Loop: "+text, text)
 	}
 }
