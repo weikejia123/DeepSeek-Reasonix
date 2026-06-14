@@ -239,3 +239,224 @@ func (a *Agent) finalReadinessCheck() finalReadinessCheck {
 3. **提示词设计**可能鼓励模型"再试一次"而非"改变策略"
 
 建议优先优化 Final Readiness Check 的可配置性，并考虑降低部分阈值。
+
+---
+
+## 附录 A: Project Checks 详解
+
+### 什么是 Project Checks
+
+Project Checks 是从项目文档中提取的**结构化检查命令**，要求模型在给出最终答案前必须执行。
+
+### 提取来源
+
+命令从项目文档中的 **"Reasonix host checks"** 章节提取，格式为：
+
+```markdown
+## Reasonix host checks
+- verify: go test ./internal/...
+- verify: git diff --check
+- verify: go test ./...
+```
+
+### 提取逻辑
+
+在 `internal/instruction/instruction.go:38-60` 中：
+
+```go
+func ExtractHostChecks(docs []memory.Source) []VerifyCheck {
+    // 扫描文档中的 "## Reasonix host checks" 章节
+    // 提取 "- verify: <command>" 格式的命令
+}
+```
+
+### 检查时机
+
+在 `internal/agent/agent.go:735-743` 中：
+
+```go
+for _, check := range a.projectChecks {
+    command := strings.TrimSpace(check.Command)
+    if command == "" {
+        continue
+    }
+    if !a.evidence.HasSuccessfulCommandAfter(command, writer) {
+        out.missingProjectChecks++
+        missing = append(missing, fmt.Sprintf("run %q from %s after the latest write", 
+            command, finalReadinessCheckSource(check)))
+    }
+}
+```
+
+### 关键条件
+
+**必须在最后一次写入后运行这些命令**，否则会被阻止。
+
+### 示例
+
+如果项目文档 `AGENTS.md` 包含：
+
+```markdown
+## Reasonix host checks
+- verify: go test ./...
+- verify: git diff --check
+```
+
+那么模型在给出最终答案前，必须：
+1. 执行 `go test ./...`
+2. 执行 `git diff --check`
+
+否则 Final Readiness Check 会失败，导致模型被阻止并需要重试。
+
+---
+
+## 附录 B: 功能加入时间线
+
+### 项目迁移历史
+
+| 时间 | 提交 | 事件 |
+|------|------|------|
+| **2026-05-29 17:53** | `32a4c02e` | **v2 初始化** —— ground-up rewrite（完全重写） |
+| **2026-05-29 18:13** | `7de6a247` | 导入 Go 实现作为 v2 kernel（从 duo 改名为 reasonix） |
+| **2026-06-02 07:26** | `686f0502` | **Project Checks 功能加入** |
+| **2026-06-02 08:34** | `5b8d54fc` | **Final Readiness Check 功能加入** |
+
+### 关键发现
+
+1. **项目确实是 v2 版本完全重写**（2026-05-29），从之前的架构迁移到 Go
+2. **Final Readiness Check 是在 v2 初始化后仅 4 天加入的**（2026-06-02）
+3. **距离 v2 初始化只有 331 个提交**时就加入了这些检查机制
+
+---
+
+## 附录 C: 为什么 TUI 的 Agent 执行质量可能更高
+
+### 可能的原因
+
+#### 1. **TUI 和 Desktop 使用相同的内核**
+从代码看，TUI 和 Desktop 都使用 `internal/agent` 包，理论上行为应该一致。但可能有以下差异：
+
+#### 2. **可能的差异点**
+
+| 方面 | TUI | Desktop |
+|------|-----|---------|
+| **交互模式** | 命令式、即时反馈 | 事件驱动、异步 |
+| **上下文管理** | 简单的会话管理 | 复杂的 Tab/Workspace 管理 |
+| **Project Checks** | 可能不加载项目文档 | 加载完整的项目文档 |
+| **超时设置** | 可能更宽松 | 可能有更严格的超时 |
+| **流式输出** | 直接终端输出 | 通过 SSE/WebSocket 转发 |
+
+#### 3. **关键差异：Project Checks 的加载**
+
+在 `internal/boot/boot.go:191` 中：
+```go
+mem := memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
+projectChecks := instruction.ExtractHostChecks(mem.Docs)
+```
+
+**如果 TUI 和 Desktop 的 `root` 或 `config.MemoryUserDir()` 不同**，可能导致：
+- TUI 没有加载到包含 "Reasonix host checks" 的项目文档
+- Desktop 加载了完整的项目文档，从而触发了更多的检查
+
+### 验证建议
+
+如果你想验证 TUI 和 Desktop 的差异，可以检查：
+
+1. **TUI 是否加载了 Project Checks**
+   ```bash
+   # 在 TUI 运行时检查日志或添加调试输出
+   ```
+
+2. **比较两者的 `root` 目录**
+   ```go
+   // 在 boot.go 中添加日志
+   fmt.Printf("DEBUG: root=%s, mem.Docs=%d, projectChecks=%d\n", 
+       root, len(mem.Docs), len(projectChecks))
+   ```
+
+3. **临时禁用 Project Checks 对比**
+   按照附录 D 的方法，将 `ProjectChecks: nil` 后，观察 Desktop 的行为是否更接近 TUI
+
+---
+
+## 附录 D: 最简单的关闭方法
+
+### 方法：直接修改 boot.go
+
+修改 `internal/boot/boot.go` 第 834 行，将 `projectChecks` 改为 `nil` 或空切片：
+
+```go
+// 修改前
+ProjectChecks:     projectChecks,
+
+// 修改后 - 方法1: 直接传 nil
+ProjectChecks:     nil,
+
+// 修改后 - 方法2: 传空切片
+ProjectChecks:     []instruction.VerifyCheck{},
+```
+
+### 优点
+
+1. **不需要修改配置窗口**（前端代码完全不用动）
+2. **不需要新增配置项**
+3. **只修改一行代码**
+4. **立即生效** —— 所有项目的 "Reasonix host checks" 都会被忽略
+
+### 修改位置
+
+**文件**: `internal/boot/boot.go:834`
+
+### 效果
+
+- `agent.projectChecks` 为空
+- `finalReadinessCheck()` 中的 `hasProjectChecks` 为 `false`
+- Project Checks 检查被完全跳过
+- 只有 Todo 检查（如果存在）会继续进行
+
+### 环境变量方案（更灵活）
+
+如果你想保留配置灵活性，可以添加一个简单的环境变量控制：
+
+```go
+// internal/boot/boot.go:834
+projectChecksToUse := projectChecks
+if os.Getenv("REASONIX_DISABLE_PROJECT_CHECKS") == "1" {
+    projectChecksToUse = nil
+}
+// ... 然后在 Options 中使用 projectChecksToUse
+```
+
+这样用户可以通过设置环境变量 `REASONIX_DISABLE_PROJECT_CHECKS=1` 来临时关闭，无需重新编译。
+
+---
+
+## 附录 E: Desktop 配置窗口现状
+
+### 当前 Agent 配置项
+
+在 `desktop/settings_app.go:107-115` 中：
+
+```go
+type AgentView struct {
+    Temperature       float64 `json:"temperature"`
+    MaxSteps          int     `json:"maxSteps"`
+    PlannerMaxSteps   int     `json:"plannerMaxSteps"`
+    SystemPrompt      string  `json:"systemPrompt"`
+    ColdResumePrune   bool    `json:"coldResumePrune"`
+    ReasoningLanguage string  `json:"reasoningLanguage"`
+}
+```
+
+### 缺失的配置项
+
+❌ **没有 Final Readiness Check 的开关**
+❌ **没有 Project Checks 的开关**
+
+如果要通过配置窗口控制，需要：
+1. 在 `AgentView` 中添加新字段
+2. 在 `internal/agent` 中添加配置支持
+3. 在前端 Settings 面板中添加 UI
+4. 修改前后端绑定代码
+
+**这就是为什么直接修改 `boot.go` 是最简单的方法** —— 它避免了繁琐的配置窗口修改。
