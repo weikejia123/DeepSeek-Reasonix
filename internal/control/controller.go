@@ -3155,7 +3155,7 @@ func (c *Controller) emitRememberResult(r RememberResult) {
 
 // --- aloop ---
 
-const aloopInterval = 30 * time.Second
+const aloopInterval = 15 * time.Second
 const aloopScriptTimeout = 10 * time.Second
 
 // StartLoop begins executing .aloop/main.sh under projectRoot every 30 seconds.
