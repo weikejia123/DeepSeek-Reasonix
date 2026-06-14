@@ -193,10 +193,12 @@ export function TabBar({ tabs, activeTabId, onTabChange, onTabClose, onTabsClose
           const planMode = collaborationMode === "plan";
           const goalMode = collaborationMode === "goal";
           const toolApprovalMode = normalizeToolApprovalMode(tab.toolApprovalMode, mode);
+          const loopMode = tab.loopActive;
           const stateTitle = [
             tab.running ? "Running" : "",
             planMode ? "Plan" : "",
             goalMode ? "Goal" : "",
+            loopMode ? "Loop" : "",
             toolApprovalMode === "auto" ? "Auto approve" : "",
             toolApprovalMode === "yolo" ? "YOLO approval" : "",
           ].filter(Boolean).join(" · ");
@@ -248,6 +250,7 @@ export function TabBar({ tabs, activeTabId, onTabChange, onTabClose, onTabsClose
               <span className="tabbar__tab-label">{displayTitle}</span>
               {planMode && <span className="tabbar__mode-badge tabbar__mode-badge--plan">plan</span>}
               {goalMode && <span className="tabbar__mode-badge tabbar__mode-badge--plan">goal</span>}
+              {loopMode && <span className="tabbar__mode-badge tabbar__mode-badge--loop">loop</span>}
               {toolApprovalMode === "auto" && <span className="tabbar__mode-badge tabbar__mode-badge--plan">auto</span>}
               {toolApprovalMode === "yolo" && <span className="tabbar__mode-badge tabbar__mode-badge--yolo">yolo</span>}
               <span

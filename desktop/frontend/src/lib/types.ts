@@ -138,6 +138,7 @@ export interface TabMeta {
   tokenMode?: TokenMode;
   goal?: string;
   goalStatus?: GoalStatus;
+  loopActive?: boolean;
   startupErr?: string;
   active: boolean;
   cwd: string;

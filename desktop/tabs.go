@@ -435,6 +435,7 @@ type TabMeta struct {
 	TokenMode         string `json:"tokenMode"`
 	Goal              string `json:"goal,omitempty"`
 	GoalStatus        string `json:"goalStatus,omitempty"`
+	LoopActive        bool   `json:"loopActive"`
 	StartupErr        string `json:"startupErr,omitempty"`
 	Active            bool   `json:"active"`
 	Cwd               string `json:"cwd"`
@@ -469,6 +470,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	}
 	if tab.Ctrl != nil {
 		m.Running = tab.Ctrl.Running()
+		m.LoopActive = tab.Ctrl.LoopActive()
 	}
 	return m
 }
