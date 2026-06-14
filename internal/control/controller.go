@@ -3253,8 +3253,9 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 
 		// Emit UserMessage event first so frontend shows the user bubble,
 		// then submit the turn. This mirrors normal user input flow.
-		c.sink.Emit(event.Event{Kind: event.UserMessage, Text: text})
-		c.SubmitDisplay("A-Loop: "+text, text)
+		displayText := "A-Loop: " + text
+		c.sink.Emit(event.Event{Kind: event.UserMessage, Text: displayText})
+		c.SubmitDisplay(displayText, text)
 
 		// Loop continues: next iteration will wait for turn completion,
 		// then wait 15s, then execute script again.
