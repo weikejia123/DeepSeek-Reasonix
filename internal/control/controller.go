@@ -3222,29 +3222,61 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 		c.loopCancel = nil
 		c.mu.Unlock()
 	}()
-	ticker := time.NewTicker(aloopInterval)
-	defer ticker.Stop()
 	for {
+		// Wait for any ongoing turn to complete before starting the interval.
+		// This ensures the 15s interval starts from turn completion.
+		if !c.waitForTurnDone(ctx) {
+			return // Context cancelled
+		}
+
+		// Wait for the interval or cancellation.
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(aloopInterval):
 		}
+
+		// Double-check no turn is running (race protection).
 		c.mu.Lock()
 		if c.running {
 			c.mu.Unlock()
 			continue
 		}
 		c.mu.Unlock()
+
 		output := c.execLoopScript(ctx, scriptPath)
 		text := strings.TrimSpace(output)
 		if text == "" {
+			// No output from script — skip this iteration but continue looping.
 			continue
 		}
+
 		// Emit UserMessage event first so frontend shows the user bubble,
 		// then submit the turn. This mirrors normal user input flow.
 		c.sink.Emit(event.Event{Kind: event.UserMessage, Text: text})
 		c.SubmitDisplay("A-Loop: "+text, text)
+
+		// Loop continues: next iteration will wait for turn completion,
+		// then wait 15s, then execute script again.
+	}
+}
+
+// waitForTurnDone blocks until no turn is running or context is cancelled.
+// Returns false if context is cancelled, true when turn completes.
+func (c *Controller) waitForTurnDone(ctx context.Context) bool {
+	for {
+		c.mu.Lock()
+		running := c.running
+		c.mu.Unlock()
+		if !running {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+			// Poll every 100ms to check if turn is done
+		}
 	}
 }
 
