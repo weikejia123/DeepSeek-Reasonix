@@ -25,7 +25,7 @@ func TestBackfillDeepSeekProRestoresPro(t *testing.T) {
 	pro := hasModel(c, "deepseek-v4-pro")
 	if pro == nil {
 		t.Fatal("deepseek-v4-pro not restored")
-	} else if pro.Price == nil || pro.Price.Output != 6 {
+	} else if pro.Price == nil || pro.Price.Output != 0.87 || pro.Price.Currency != "$" {
 		t.Errorf("pro price not the preset: %+v", pro.Price)
 	}
 }
@@ -118,6 +118,54 @@ func TestNormalizeDesktopOfficialProviderAccessCanonicalizesLegacyIDs(t *testing
 	}
 }
 
+func TestNormalizeOfficialDeepSeekModelsRepairsCanonicalProvider(t *testing.T) {
+	c := &Config{
+		DefaultModel: "deepseek-flash/deepseek-v4-flash",
+		Desktop:      DesktopConfig{ProviderAccess: []string{"deepseek"}},
+		Providers: []ProviderEntry{{
+			Name:      "deepseek",
+			Kind:      "openai",
+			BaseURL:   "https://api.deepseek.com",
+			Model:     "glm-5",
+			APIKeyEnv: "DEEPSEEK_API_KEY",
+		}},
+	}
+	normalizeDesktopOfficialProviderAccess(c)
+	normalizeOfficialDeepSeekModels(c)
+
+	p, ok := c.Provider("deepseek")
+	if !ok {
+		t.Fatal("deepseek provider missing")
+	}
+	if !p.HasModel("deepseek-v4-flash") || !p.HasModel("deepseek-v4-pro") || !p.HasModel("glm-5") {
+		t.Fatalf("deepseek models = %+v, want official models plus existing model", p.ModelList())
+	}
+	if c.DefaultModel != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("default_model = %q, want retargeted official ref", c.DefaultModel)
+	}
+	if _, ok := c.ResolveModel(c.DefaultModel); !ok {
+		t.Fatalf("retargeted default_model %q should resolve", c.DefaultModel)
+	}
+}
+
+func TestNormalizeOfficialDeepSeekModelsLeavesExternalEndpointUntouched(t *testing.T) {
+	c := &Config{Providers: []ProviderEntry{{
+		Name:    "deepseek",
+		Kind:    "openai",
+		BaseURL: "https://proxy.example.com/v1",
+		Model:   "glm-5",
+	}}}
+	normalizeOfficialDeepSeekModels(c)
+
+	p, ok := c.Provider("deepseek")
+	if !ok {
+		t.Fatal("deepseek provider missing")
+	}
+	if p.HasModel("deepseek-v4-flash") || p.HasModel("deepseek-v4-pro") {
+		t.Fatalf("external endpoint models = %+v, want untouched custom list", p.ModelList())
+	}
+}
+
 func TestNormalizeDesktopOfficialProviderAccessEnsuresMimoAPI(t *testing.T) {
 	c := Default()
 	c.DefaultModel = "mimo-api/mimo-v2.5-pro"
@@ -132,6 +180,53 @@ func TestNormalizeDesktopOfficialProviderAccessEnsuresMimoAPI(t *testing.T) {
 	}
 	if got := c.Desktop.ProviderAccess; len(got) != 1 || got[0] != "mimo-api" {
 		t.Fatalf("provider_access = %+v, want mimo-api", got)
+	}
+}
+
+func TestBackfillDeepSeekOfficialPrices(t *testing.T) {
+	c := &Config{Providers: []ProviderEntry{{
+		Name:    "deepseek",
+		Kind:    "openai",
+		BaseURL: "https://api.deepseek.com",
+		Models:  []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		Default: "deepseek-v4-flash",
+	}}}
+	backfillDeepSeekOfficialPrices(c)
+	p, ok := c.Provider("deepseek")
+	if !ok {
+		t.Fatal("deepseek provider missing")
+	}
+	if p.Prices["deepseek-v4-flash"].Output != 0.28 || p.Prices["deepseek-v4-pro"].Output != 0.87 {
+		t.Fatalf("deepseek prices = %+v, want current V4 flash/pro prices", p.Prices)
+	}
+}
+
+func TestResolveModelUsesPerModelPricing(t *testing.T) {
+	c := &Config{Providers: []ProviderEntry{{
+		Name:    "deepseek",
+		Kind:    "openai",
+		BaseURL: "https://api.deepseek.com",
+		Models:  []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		Default: "deepseek-v4-flash",
+		Price:   &provider.Pricing{CacheHit: 9, Input: 9, Output: 9, Currency: "$"},
+		Prices: map[string]*provider.Pricing{
+			"deepseek-v4-flash": &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"},
+			"deepseek-v4-pro":   &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"},
+		},
+	}}}
+	pro, ok := c.ResolveModel("deepseek/deepseek-v4-pro")
+	if !ok {
+		t.Fatal("deepseek pro did not resolve")
+	}
+	if pro.Price == nil || pro.Price.Output != 0.87 {
+		t.Fatalf("pro price = %+v, want model-specific pro price", pro.Price)
+	}
+	flash, ok := c.ResolveModel("deepseek")
+	if !ok {
+		t.Fatal("deepseek default did not resolve")
+	}
+	if flash.Price == nil || flash.Price.Output != 0.28 {
+		t.Fatalf("flash price = %+v, want model-specific flash price", flash.Price)
 	}
 }
 

@@ -1052,6 +1052,47 @@ func TestSetEffortRebuildsController(t *testing.T) {
 	}
 }
 
+func TestSetEffortMigratesStaleOfficialDeepSeekTabModel(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("DEEPSEEK_API_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash"
+	cfg.Desktop.ProviderAccess = []string{"deepseek"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "deepseek",
+		Kind:      "openai",
+		BaseURL:   "https://api.deepseek.com",
+		Model:     "glm-5",
+		APIKeyEnv: "DEEPSEEK_API_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "deepseek-flash/deepseek-v4-flash")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	if err := app.SetEffort("max"); err != nil {
+		t.Fatalf("SetEffort(max): %v", err)
+	}
+	tab := app.activeTab()
+	if tab == nil {
+		t.Fatal("active tab missing")
+	}
+	if tab.model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("tab model = %q, want migrated official ref", tab.model)
+	}
+}
+
 func TestSetTokenModeRebuildsController(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -1091,8 +1132,54 @@ func TestSetTokenModeRebuildsController(t *testing.T) {
 	}
 }
 
+func TestSetTokenModeMigratesStaleOfficialDeepSeekTabModel(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("DEEPSEEK_API_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "deepseek/deepseek-v4-flash"
+	cfg.Desktop.ProviderAccess = []string{"deepseek"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "deepseek",
+		Kind:      "openai",
+		BaseURL:   "https://api.deepseek.com",
+		Model:     "glm-5",
+		APIKeyEnv: "DEEPSEEK_API_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "deepseek-flash/deepseek-v4-flash")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	if err := app.SetTokenMode("economy"); err != nil {
+		t.Fatalf("SetTokenMode(economy): %v", err)
+	}
+	tab := app.activeTab()
+	if tab == nil {
+		t.Fatal("active tab missing")
+	}
+	if tab.model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("tab model = %q, want migrated official ref", tab.model)
+	}
+	if got := currentTabTokenMode(tab); got != "economy" {
+		t.Fatalf("token mode = %q, want economy", got)
+	}
+}
+
 func TestSetTokenModeKeepsControllerWhenRebuildFails(t *testing.T) {
 	isolateDesktopUserDirs(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("MIMO_API_KEY", "")
 
 	app := NewApp()
 	app.ctx = context.Background()
@@ -1640,6 +1727,100 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	}
 	if titles := loadSessionTitles(dirB); len(titles) != 0 {
 		t.Fatalf("inactive workspace title sidecar should remain untouched, got %+v", titles)
+	}
+}
+
+func TestListSessionsMarksAutoBotSessionAsChannel(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "bot-channel.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"from channel"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Bot.Connections = []config.BotConnectionConfig{{
+		ID: "weixin-weixin", Provider: "weixin", Domain: "weixin", Label: "微信", Enabled: true, Status: "connected",
+		SessionMappings: []config.BotConnectionSessionMapping{{
+			RemoteID: "wx-chat-1", SessionID: "path:" + path, SessionSource: "auto",
+		}},
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{SessionDir: dir, SessionPath: filepath.Join(dir, "active.jsonl"), Label: "test"}), "")
+	defer app.activeCtrl().Close()
+
+	sessions := app.ListSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("ListSessions len = %d, want 1: %+v", len(sessions), sessions)
+	}
+	got := sessions[0]
+	if got.Kind != "channel" || got.Channel != "weixin" || got.ChannelLabel != "微信" || got.RemoteID != "wx-chat-1" || got.SessionSource != "auto" {
+		t.Fatalf("channel session meta = %+v", got)
+	}
+}
+
+func TestOpenChannelSessionForTabIsReadOnly(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "bot-channel.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"from channel"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	app := NewApp()
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: filepath.Join(dir, "active.jsonl"), Label: "test"})
+	app.setTestCtrl(ctrl, "")
+	defer app.activeCtrl().Close()
+
+	if _, err := app.OpenChannelSessionForTab("test", path); err != nil {
+		t.Fatalf("OpenChannelSessionForTab: %v", err)
+	}
+	if meta := app.tabMeta(app.activeTab(), true); !meta.ReadOnly {
+		t.Fatalf("channel tab should be read-only: %+v", meta)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+	app.SubmitToTab("test", "must not append")
+	app.RunShellForTab("test", "echo must-not-run")
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("read-only channel transcript changed:\nbefore=%s\nafter=%s", before, after)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open append: %v", err)
+	}
+	if _, err := f.WriteString(`{"role":"user","content":"external follow-up"}` + "\n"); err != nil {
+		f.Close()
+		t.Fatalf("append external message: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close append: %v", err)
+	}
+	app.snapshotAllTabs()
+	afterSnapshot, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after snapshot: %v", err)
+	}
+	if !strings.Contains(string(afterSnapshot), "external follow-up") {
+		t.Fatalf("read-only channel snapshot overwrote external append:\n%s", afterSnapshot)
 	}
 }
 

@@ -347,6 +347,7 @@ export function Composer({
   onSetLoopActive,
   insertRequest,
   disabled,
+  readOnly = false,
   decisionPending = false,
   ready,
   turnStartAt,
@@ -381,6 +382,7 @@ export function Composer({
   onSetLoopActive?: (active: boolean) => void;
   insertRequest?: ComposerInsertRequest | null;
   disabled?: boolean;
+  readOnly?: boolean;
   decisionPending?: boolean;
   // ready/cwd/running re-trigger the command fetch: Commands() returns only
   // built-ins until boot.Build finishes (the controller, hence skills/custom/MCP,
@@ -878,7 +880,7 @@ export function Composer({
   const tokenModeOn = tokenMode === "economy";
 
   const submit = async () => {
-    if (disabled || submittingRef.current) return;
+    if (disabled || readOnly || submittingRef.current) return;
     const trimmedText = text.trim();
     if (pendingPaste > 0) return;
     if (!trimmedText && attachments.length === 0 && workspaceRefs.length === 0) {
@@ -2043,7 +2045,7 @@ export function Composer({
           onDoubleClick={resetComposerHeight}
         />
         <div
-          className={`composer${dragOver ? " composer--dragover" : ""}${disabled ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
+          className={`composer${dragOver ? " composer--dragover" : ""}${disabled || readOnly ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
           onDrop={onDrop}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
@@ -2072,9 +2074,9 @@ export function Composer({
               lastCompositionEndAt.current = Date.now();
             }}
             style={textareaStyle}
-            placeholder={disabled ? t("common.loading") : goalModeOn && !activeGoal ? t("composer.goalInputPlaceholder") : t("composer.placeholder")}
+            placeholder={readOnly ? t("composer.readOnlyChannel") : disabled ? t("common.loading") : goalModeOn && !activeGoal ? t("composer.goalInputPlaceholder") : t("composer.placeholder")}
             rows={1}
-            disabled={disabled}
+            disabled={disabled || readOnly}
           />
           {composerPrompt && (
             <span className="composer__prompt" role="status">
@@ -2086,7 +2088,7 @@ export function Composer({
               <button
                 className="composer__btn composer__btn--send"
                 onClick={submit}
-                disabled={submitting || pendingPaste > 0 || ((!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) && !(goalModeOn && !activeGoal)) || disabled}
+                disabled={submitting || pendingPaste > 0 || ((!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) && !(goalModeOn && !activeGoal)) || disabled || readOnly}
               >
                 <ArrowUp size={16} />
               </button>

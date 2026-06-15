@@ -164,6 +164,7 @@ type Agent struct {
 	executorHandoffGuard bool
 	temperature          float64
 	pricing              *provider.Pricing
+	usageSource          string
 	reasoningLanguage    atomic.Value // string: auto|zh|en
 
 	// sink receives the turn's typed event stream (reasoning/text deltas, tool
@@ -471,6 +472,7 @@ type Options struct {
 	MaxStepsKey string
 	Temperature float64
 	Pricing     *provider.Pricing // optional, for per-turn cost display
+	UsageSource string            // optional billable usage source; default executor
 
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
@@ -542,6 +544,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxStepsKey:          maxStepsKey,
 		temperature:          opts.Temperature,
 		pricing:              opts.Pricing,
+		usageSource:          usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
 		sink:                 sink,
 		gate:                 gate,
 		hooks:                hooks,
@@ -558,6 +561,14 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	return a
+}
+
+func usageSourceOrDefault(source, fallback string) string {
+	source = strings.TrimSpace(source)
+	if source != "" {
+		return source
+	}
+	return fallback
 }
 
 // Run appends the user input and drives the tool loop until the model returns a
@@ -629,6 +640,7 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 		a.haveLastPrefixShape = true
 		if usage != nil && usage.TotalTokens > 0 {
 			a.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: a.pricing,
+				UsageSource:      a.usageSource,
 				CacheDiagnostics: &cacheDiagnostics,
 				SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
 		}
@@ -640,6 +652,7 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 		// archive. It is NOT re-uploaded to the API: the openai provider drops it
 		// when building the request, since re-sent reasoning is billable prompt
 		// input for no cache or coherence gain.
+		calls = a.withPreviewFileDiffs(calls)
 		a.session.Add(provider.Message{
 			Role:               provider.RoleAssistant,
 			Content:            text,
@@ -1156,10 +1169,13 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 	for _, c := range calls {
 		t, ok := a.tools.Get(c.Name)
 		ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly()}
-		if ok {
+		ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
+		if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
 			if ch, ok := tool.PreviewChange(t, json.RawMessage(c.Arguments)); ok {
 				ev.FileDiff = event.FileDiff{Diff: ch.Diff, Added: ch.Added, Removed: ch.Removed}
 			}
+		}
+		if ok {
 			if pr, ok := t.(interface {
 				ResolveProfile(json.RawMessage) *event.Profile
 			}); ok {
@@ -1208,6 +1224,29 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 	}
 	a.applyStormBreaker(calls, outcomes, results)
 	return results
+}
+
+func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := make([]provider.ToolCall, len(calls))
+	copy(out, calls)
+	for i := range out {
+		if out[i].Diff != "" || out[i].Added != 0 || out[i].Removed != 0 {
+			continue
+		}
+		t, ok := a.tools.Get(out[i].Name)
+		if !ok {
+			continue
+		}
+		if ch, ok := tool.PreviewChange(t, json.RawMessage(out[i].Arguments)); ok {
+			out[i].Diff = ch.Diff
+			out[i].Added = ch.Added
+			out[i].Removed = ch.Removed
+		}
+	}
+	return out
 }
 
 type toolCallBatch struct {

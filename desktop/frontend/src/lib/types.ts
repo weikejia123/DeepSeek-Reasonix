@@ -44,6 +44,9 @@ export interface WireTool {
   durationMs?: number;
   partial?: boolean; // an early dispatch (name only) — a full one with args follows
   parentId?: string; // set on a sub-agent's calls — the parent `task` call's id
+  diff?: string;
+  added?: number;
+  removed?: number;
   profile?: WireProfile; // subagent model/effort resolved for this call
 }
 
@@ -54,6 +57,7 @@ export interface WireUsage {
   cacheHitTokens: number;
   cacheMissTokens: number;
   reasoningTokens?: number;
+  source?: string;
   // Session-cumulative cache tokens — the status bar shows the aggregate
   // hit-rate (Σhit/Σ(hit+miss)), steadier than the single-turn cacheHitTokens.
   sessionCacheHitTokens: number;
@@ -128,6 +132,7 @@ export interface TabMeta {
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
+  readOnly?: boolean;
   filePath?: string;
   projectColor?: string;
   label: string;
@@ -186,9 +191,23 @@ export interface ContextPanelInfo {
   sessionCurrency?: string;
   // Deprecated compatibility alias. Prefer sessionCost + sessionCurrency.
   sessionCostUsd?: number;
+  sources?: Record<string, UsageSourceStats>;
   mock?: boolean;
   readFiles: ReadFileRecord[];
   changedFiles: ChangedFileInfo[];
+}
+
+export interface UsageSourceStats {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  reasoningTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  requestCount: number;
+  sessionCost?: number;
+  sessionCurrency?: string;
+  sessionCostUsd?: number;
 }
 
 export interface ReadFileRecord {
@@ -219,6 +238,8 @@ export interface HistoryMessage {
   toolCalls?: HistoryToolCall[];
   toolCallId?: string;
   toolName?: string;
+  toolResultArchived?: boolean;
+  toolResultError?: string;
   pending?: boolean;
   trigger?: string;
   messages?: number;
@@ -230,6 +251,12 @@ export interface HistoryToolCall {
   id: string;
   name: string;
   arguments: string;
+  subject?: string;
+  summary?: string;
+  diff?: string;
+  added?: number;
+  removed?: number;
+  argumentsArchived?: boolean;
 }
 
 export interface PromptHistoryEntry {
@@ -272,6 +299,14 @@ export interface SessionMeta {
   workspaceRoot?: string;
   topicId?: string;
   topicTitle?: string;
+  kind?: "session" | "channel" | string;
+  channel?: string;
+  channelLabel?: string;
+  remoteId?: string;
+  chatType?: string;
+  userId?: string;
+  threadId?: string;
+  sessionSource?: string;
 }
 
 // SessionReference is a session selected via @ past:chats for context injection.

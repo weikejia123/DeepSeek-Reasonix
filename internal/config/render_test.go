@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -65,6 +66,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Notifications.TurnDone = true
 	orig.Notifications.ApprovalRequest = true
 	orig.Notifications.AskRequest = true
+	orig.Agent.MaxSteps = 30
+	orig.Agent.PlannerMaxSteps = 0
 	orig.Agent.AutoPlanClassifier = "deepseek-flash"
 	orig.Agent.ReasoningLanguage = "zh"
 	orig.Agent.SubagentModel = "mimo-pro"
@@ -484,6 +487,132 @@ func TestProjectRenderPreservesNonDefaultLegacySections(t *testing.T) {
 	}
 }
 
+func TestRenderTOMLRoundTripsPerModelPrices(t *testing.T) {
+	orig := Default()
+	orig.Providers = []ProviderEntry{{
+		Name:      "deepseek",
+		Kind:      "openai",
+		BaseURL:   "https://api.deepseek.com",
+		Models:    []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		Default:   "deepseek-v4-flash",
+		APIKeyEnv: "DEEPSEEK_API_KEY",
+		Prices:    deepSeekV4Prices(),
+	}}
+
+	var got Config
+	if _, err := toml.Decode(RenderTOML(orig), &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v", err)
+	}
+	p, ok := got.Provider("deepseek")
+	if !ok {
+		t.Fatal("deepseek provider missing after round trip")
+	}
+	if p.Prices["deepseek-v4-flash"].Input != 0.14 || p.Prices["deepseek-v4-pro"].Output != 0.87 {
+		t.Fatalf("prices after round trip = %+v", p.Prices)
+	}
+}
+
 func boolPtr(v bool) *bool { return &v }
 
 func intPtr(v int) *int { return &v }
+
+func TestRenderTOMLDefaultStepsCommentedOut(t *testing.T) {
+	isolateUserConfigHome(t)
+	out := RenderTOML(Default())
+	agentLines := extractSectionLines(out, "[agent]")
+	for _, line := range agentLines {
+		if strings.HasPrefix(line, "max_steps ") || strings.HasPrefix(line, "max_steps=") {
+			if !strings.HasPrefix(line, "#") {
+				t.Errorf("default max_steps should be commented out in [agent], got: %s", line)
+			}
+		}
+		if strings.HasPrefix(line, "planner_max_steps ") || strings.HasPrefix(line, "planner_max_steps=") {
+			if !strings.HasPrefix(line, "#") {
+				t.Errorf("default planner_max_steps should be commented out in [agent], got: %s", line)
+			}
+		}
+	}
+}
+
+func extractSectionLines(toml, section string) []string {
+	var lines []string
+	inSection := false
+	for _, line := range strings.Split(toml, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, section) {
+			inSection = true
+			continue
+		}
+		if inSection && strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "[[") {
+			break
+		}
+		if inSection {
+			lines = append(lines, trimmed)
+		}
+	}
+	return lines
+}
+
+func TestRenderTOMLNonDefaultStepsWrittenExplicitly(t *testing.T) {
+	isolateUserConfigHome(t)
+	c := Default()
+	c.Agent.MaxSteps = 5
+	c.Agent.PlannerMaxSteps = 0
+	out := RenderTOML(c)
+	agentLines := extractSectionLines(out, "[agent]")
+	foundMax, foundPlanner := false, false
+	for _, line := range agentLines {
+		if !strings.HasPrefix(line, "#") && strings.HasPrefix(line, "max_steps ") {
+			foundMax = true
+		}
+		if !strings.HasPrefix(line, "#") && strings.HasPrefix(line, "planner_max_steps ") {
+			foundPlanner = true
+		}
+	}
+	if !foundMax {
+		t.Error("non-default max_steps should be written explicitly in [agent]")
+	}
+	if !foundPlanner {
+		t.Error("non-default planner_max_steps should be written explicitly in [agent]")
+	}
+}
+
+func TestRenderTOMLDefaultStepsDoNotOverrideGlobalConfig(t *testing.T) {
+	home := isolateUserConfigHome(t)
+	globalDir := filepath.Join(home, ".config", "reasonix")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalPath := filepath.Join(globalDir, "config.toml")
+	if err := os.WriteFile(globalPath, []byte("[agent]\nplanner_max_steps = 0\nmax_steps = 100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := t.TempDir()
+	projectTOML := RenderTOML(Default())
+	projectPath := filepath.Join(projectDir, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(projectTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Default()
+	if err := mergeFile(cfg, globalPath); err != nil {
+		t.Fatalf("global merge failed: %v", err)
+	}
+	if cfg.Agent.PlannerMaxSteps != 0 {
+		t.Fatalf("after global: planner_max_steps = %d, want 0", cfg.Agent.PlannerMaxSteps)
+	}
+	if cfg.Agent.MaxSteps != 100 {
+		t.Fatalf("after global: max_steps = %d, want 100", cfg.Agent.MaxSteps)
+	}
+
+	if err := mergeFile(cfg, projectPath); err != nil {
+		t.Fatalf("project merge failed: %v", err)
+	}
+	if cfg.Agent.PlannerMaxSteps != 0 {
+		t.Errorf("after project: planner_max_steps = %d, want 0 (global should not be overridden by commented-out default)", cfg.Agent.PlannerMaxSteps)
+	}
+	if cfg.Agent.MaxSteps != 100 {
+		t.Errorf("after project: max_steps = %d, want 100 (global should not be overridden by commented-out default)", cfg.Agent.MaxSteps)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"reasonix/internal/provider"
 )
 
 type RenderScope string
@@ -165,8 +167,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# system_prompt_file = \"prompts/system.md\"   # overrides system_prompt when set\n")
 	}
-	fmt.Fprintf(&b, "max_steps         = %d   # executor tool-call rounds; 0 = no limit\n", c.Agent.MaxSteps)
-	fmt.Fprintf(&b, "planner_max_steps = %d   # planner read-only tool-call rounds; 0 = no limit\n", c.Agent.PlannerMaxSteps)
+	if c.Agent.MaxSteps != defaults.Agent.MaxSteps {
+		fmt.Fprintf(&b, "max_steps         = %d   # executor tool-call rounds; 0 = no limit\n", c.Agent.MaxSteps)
+	} else {
+		b.WriteString("# max_steps         = 0   # executor tool-call rounds; 0 = no limit\n")
+	}
+	if c.Agent.PlannerMaxSteps != defaults.Agent.PlannerMaxSteps {
+		fmt.Fprintf(&b, "planner_max_steps = %d   # planner read-only tool-call rounds; 0 = no limit\n", c.Agent.PlannerMaxSteps)
+	} else {
+		b.WriteString("# planner_max_steps = 12   # planner read-only tool-call rounds; 0 = no limit\n")
+	}
 	fmt.Fprintf(&b, "temperature       = %s\n", formatFloat(c.Agent.Temperature))
 	autoPlan := c.Agent.AutoPlan
 	switch strings.ToLower(strings.TrimSpace(autoPlan)) {
@@ -247,8 +257,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "context_window = %d   # tokens; compaction triggers near this limit\n", p.ContextWindow)
 			}
 			if p.Price != nil {
-				fmt.Fprintf(&b, "price       = { cache_hit = %v, input = %v, output = %v, currency = %q }   # per 1M tokens\n",
-					p.Price.CacheHit, p.Price.Input, p.Price.Output, p.Price.Symbol())
+				fmt.Fprintf(&b, "price       = %s   # provider-wide fallback, per 1M tokens\n", renderPricingInline(p.Price))
+			}
+			if len(p.Prices) > 0 {
+				fmt.Fprintf(&b, "prices      = %s   # per-model prices, per 1M tokens\n", renderPricingMap(p.Prices))
 			}
 			if p.Thinking != "" {
 				fmt.Fprintf(&b, "thinking    = %q\n", p.Thinking)
@@ -495,6 +507,40 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 	}
 
+	return b.String()
+}
+
+func renderPricingInline(p *provider.Pricing) string {
+	if p == nil {
+		return "{}"
+	}
+	return fmt.Sprintf("{ cache_hit = %v, input = %v, output = %v, currency = %q }",
+		p.CacheHit, p.Input, p.Output, p.Symbol())
+}
+
+func renderPricingMap(prices map[string]*provider.Pricing) string {
+	if len(prices) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(prices))
+	for model := range prices {
+		if strings.TrimSpace(model) != "" && prices[model] != nil {
+			keys = append(keys, model)
+		}
+	}
+	if len(keys) == 0 {
+		return "{}"
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, model := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s = %s", strconv.Quote(model), renderPricingInline(prices[model]))
+	}
+	b.WriteString(" }")
 	return b.String()
 }
 
