@@ -9,6 +9,7 @@ import type * as GeneratedApp from "../../wailsjs/go/main/App";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
+import { providerRequiresKey } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 
@@ -19,14 +20,13 @@ import type {
   BotInstallStartResult,
   BotRuntimeStatusView,
   BotSettingsView,
-  BuiltInMCPUpdateResult,
-  BuiltInMCPUpdateStatus,
   CapabilitiesView,
   CheckpointMeta,
   CommandInfo,
   ContextInfo,
   ContextPanelInfo,
   DirEntry,
+  DesktopStartupSettingsView,
   DroppedItem,
   EffortInfo,
   FilePreview,
@@ -49,12 +49,14 @@ import type {
   ServerView,
   SessionMeta,
   SettingsView,
+  SkillsSettingsView,
   SkillRootView,
   SkillSuggestion,
   SkillView,
   SlashArgsResult,
   TabMeta,
   TopicMeta,
+  UpdateDownloadResult,
   UpdateInfo,
   UpdateProgress,
   WireEvent,
@@ -65,6 +67,16 @@ import type {
 } from "./types";
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
+
+function stripGoalResearchFlags(arg: string): string {
+  const parts = arg.trim().split(/\s+/).filter(Boolean);
+  while (parts.length > 0) {
+    const flag = parts[0].toLowerCase();
+    if (flag !== "--research" && flag !== "--auto-research" && flag !== "--deep" && flag !== "--simple" && flag !== "--no-research") break;
+    parts.shift();
+  }
+  return parts.join(" ");
+}
 
 // AppBindings is derived from the Wails-generated Go → TS method signatures, so
 // the compiler catches drift between the Go binding surface and the frontend mock.
@@ -98,6 +110,12 @@ interface DesktopWindowState {
 // to AppBindings, then run `pnpm typecheck` to verify.
 export interface AppBindings {
   Platform(): Promise<string>;
+  // ── Heartbeat ──
+  HeartbeatListTasks(): Promise<unknown>;
+  HeartbeatReloadTasks(): Promise<unknown>;
+  HeartbeatSaveTasks(tasks: unknown): Promise<void>;
+  HeartbeatTriggerNow(id: string): Promise<void>;
+  HeartbeatGenerateID(): Promise<string>;
   Submit(input: string): Promise<void>;
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitDisplay(display: string, input: string): Promise<void>;
@@ -168,12 +186,12 @@ export interface AppBindings {
   MetaForTab(tabID: string): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
   Capabilities(): Promise<CapabilitiesView>;
+  MCPServers(): Promise<ServerView[]>;
+  SkillsSettings(): Promise<SkillsSettingsView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
   ReconnectMCPServer(name: string): Promise<void>;
-  UpdateBuiltInMCPServer(name: string): Promise<BuiltInMCPUpdateResult>;
-  BuiltInMCPUpdateStatuses(): Promise<BuiltInMCPUpdateStatus[]>;
   ClearMCPServerAuthentication(name: string): Promise<void>;
   PickSkillFolder(): Promise<string>;
   AddSkillPath(path: string): Promise<void>;
@@ -187,11 +205,11 @@ export interface AppBindings {
   ListWorkspaceFiles(): Promise<string[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
-  WorkspaceChanges(): Promise<WorkspaceChangesView>;
+  WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
   GitBranches(): Promise<string[]>;
   GitCheckout(branch: string): Promise<void>;
-  WorkspaceGitHistory(path: string): Promise<GitCommitView[]>;
-  WorkspaceGitCommitDetail(hash: string, path: string): Promise<GitCommitDetailView>;
+  WorkspaceGitHistory(tabID: string, path: string): Promise<GitCommitView[]>;
+  WorkspaceGitCommitDetail(tabID: string, hash: string, path: string): Promise<GitCommitDetailView>;
   OpenWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
   RevealPath(path: string): Promise<void>;
@@ -226,6 +244,7 @@ export interface AppBindings {
   ForgetForTab(tabID: string, name: string): Promise<void>;
   SaveDoc(path: string, body: string): Promise<string>;
   SaveDocForTab(tabID: string, path: string, body: string): Promise<string>;
+  DesktopStartupSettings(): Promise<DesktopStartupSettingsView>;
   Settings(): Promise<SettingsView>;
   HooksSettings(scope: string): Promise<HooksSettingsView>;
   SaveHooksSettings(scope: string, hooks: HookConfigView[]): Promise<void>;
@@ -238,11 +257,11 @@ export interface AppBindings {
   SetSubagentEffort(level: string): Promise<void>;
   SetAutoPlan(mode: string): Promise<void>;
   SaveProvider(p: ProviderView): Promise<void>;
-  AddOfficialProviderAccess(kind: string, key: string): Promise<void>;
+  AddOfficialProviderAccess(kind: string, key: string): Promise<string>;
   FetchProviderModels(p: ProviderView): Promise<string[]>;
   DeleteProvider(name: string): Promise<void>;
   RemoveProviderAccess(name: string): Promise<void>;
-  SetProviderKey(apiKeyEnv: string, value: string): Promise<void>;
+  SetProviderKey(apiKeyEnv: string, value: string): Promise<string>;
   ClearProviderKey(apiKeyEnv: string): Promise<void>;
   SetPermissionMode(mode: string): Promise<void>;
   AddPermissionRule(list: string, rule: string): Promise<void>;
@@ -279,10 +298,12 @@ export interface AppBindings {
   SetBypass(on: boolean): Promise<void>;
   Version(): Promise<string>;
   CheckUpdate(): Promise<UpdateInfo | null>;
+  DownloadUpdate(): Promise<UpdateDownloadResult | null>;
+  InstallUpdate(): Promise<void>;
   ApplyUpdate(): Promise<void>;
   OpenDownloadPage(): Promise<void>;
   NeedsOnboarding(): Promise<boolean>;
-  ConnectKey(apiKey: string): Promise<void>;
+  ConnectKey(apiKey: string): Promise<string>;
   // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
   // version/os/arch, POSTs to the collection endpoint. Only ever sent on user click.
   ReportCrash(kind: string, detail: string): Promise<void>;
@@ -325,6 +346,14 @@ export type _CheckGenToApp = AssertNever<Exclude<keyof typeof GeneratedApp, keyo
 interface WailsRuntime {
   EventsOn(name: string, cb: (...data: unknown[]) => void): () => void;
   BrowserOpenURL(url: string): void;
+  WindowSetSystemDefaultTheme?(): void;
+  WindowSetLightTheme?(): void;
+  WindowSetDarkTheme?(): void;
+  WindowSetBackgroundColour?(r: number, g: number, b: number, a: number): void;
+  WindowGetSize?(): Promise<{ w: number; h: number }>;
+  WindowGetPosition?(): Promise<{ x: number; y: number }>;
+  WindowIsMaximised?(): Promise<boolean>;
+  ClipboardSetText?(text: string): Promise<boolean>;
   // Native OS file drop (desktop only); useDropTarget gates delivery to elements
   // carrying the --wails-drop-target CSS property. Absent in the browser dev mock.
   OnFileDrop?(cb: (x: number, y: number, paths: string[]) => void, useDropTarget: boolean): void;
@@ -340,6 +369,9 @@ declare global {
 
 // Must match desktop/app.go's eventChannel constant.
 const EVENT_CHANNEL = "agent:event";
+const RECENT_NATIVE_FILE_DRAG_MS = 2000;
+const WAILS_NON_FILE_DRAG_MESSAGE = "additional File object is not a file on the disk";
+const UNCAUGHT_ERROR_PREFIX_RE = /^Uncaught(?:\s+\(in promise\))?(?:\s+\w*Error)?:\s*/i;
 
 // Resolve the Wails binding at CALL time, not module-load time: in dev the Wails
 // runtime can inject window.go AFTER this module first evaluates, so snapshotting
@@ -376,11 +408,83 @@ export function onUpdaterProgress(cb: (p: UpdateProgress) => void): () => void {
   };
 }
 
-export function onBuiltInMCPUpdate(cb: (status: BuiltInMCPUpdateStatus) => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("builtin-mcp:update", (status) => cb(status as BuiltInMCPUpdateStatus));
+function errorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === "string") return msg;
   }
-  return () => {};
+  return String(err);
+}
+
+export function isWailsNonFileDragError(err: unknown, recentNativeFileDrag = false): boolean {
+  const msg = errorMessage(err).trim().replace(UNCAUGHT_ERROR_PREFIX_RE, "");
+  if (msg.includes(WAILS_NON_FILE_DRAG_MESSAGE)) return true;
+  return recentNativeFileDrag && msg.toLowerCase() === "invalid argument";
+}
+
+export function isWailsNonFileDragErrorEvent(
+  event: Pick<ErrorEvent, "error" | "message">,
+  recentNativeFileDrag = false,
+): boolean {
+  if (isWailsNonFileDragError(event.error ?? event.message, recentNativeFileDrag)) return true;
+  return event.error != null && isWailsNonFileDragError(event.message, recentNativeFileDrag);
+}
+
+function dataTransferLooksLikeFileDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  if (dt.files?.length > 0) return true;
+  return Array.from(dt.types ?? []).includes("Files");
+}
+
+let wailsDragSuppressionRefs = 0;
+let wailsDragSuppressionUninstall: (() => void) | null = null;
+let lastNativeFileDragAt = 0;
+
+export function installWailsNonFileDragErrorSuppression(): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  wailsDragSuppressionRefs += 1;
+  if (!wailsDragSuppressionUninstall) {
+    const markNativeFileDrag = (e: DragEvent) => {
+      if (dataTransferLooksLikeFileDrag(e.dataTransfer)) lastNativeFileDragAt = Date.now();
+    };
+    const hasRecentNativeFileDrag = () => Date.now() - lastNativeFileDragAt <= RECENT_NATIVE_FILE_DRAG_MS;
+    const suppressNonFileDragError = (e: ErrorEvent) => {
+      if (isWailsNonFileDragErrorEvent(e, hasRecentNativeFileDrag())) {
+        e.preventDefault();
+      }
+    };
+    const suppressNonFileDragRejection = (e: PromiseRejectionEvent) => {
+      if (isWailsNonFileDragError(e.reason, hasRecentNativeFileDrag())) {
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener("dragenter", markNativeFileDrag, true);
+    window.addEventListener("dragover", markNativeFileDrag, true);
+    window.addEventListener("drop", markNativeFileDrag, true);
+    window.addEventListener("error", suppressNonFileDragError);
+    window.addEventListener("unhandledrejection", suppressNonFileDragRejection);
+    wailsDragSuppressionUninstall = () => {
+      window.removeEventListener("dragenter", markNativeFileDrag, true);
+      window.removeEventListener("dragover", markNativeFileDrag, true);
+      window.removeEventListener("drop", markNativeFileDrag, true);
+      window.removeEventListener("error", suppressNonFileDragError);
+      window.removeEventListener("unhandledrejection", suppressNonFileDragRejection);
+      lastNativeFileDragAt = 0;
+    };
+  }
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    wailsDragSuppressionRefs = Math.max(0, wailsDragSuppressionRefs - 1);
+    if (wailsDragSuppressionRefs === 0 && wailsDragSuppressionUninstall) {
+      wailsDragSuppressionUninstall();
+      wailsDragSuppressionUninstall = null;
+    }
+  };
 }
 
 // onFilesDropped subscribes to native OS file drops landing on the composer (the
@@ -393,27 +497,14 @@ export function onFilesDropped(cb: (paths: string[]) => void): () => void {
   // Wails' internal ResolveFilePaths throws when a non-file object (e.g. the
   // window icon) is dragged onto the webview. The error is uncaught and crashes
   // the app. Intercept it here so only real file drops reach the callback.
-  const suppressNonFileDragError = (e: ErrorEvent) => {
-    if (e.message?.includes("additional File object is not a file on the disk")) {
-      e.preventDefault();
-    }
-  };
-  const suppressNonFileDragRejection = (e: PromiseRejectionEvent) => {
-    const msg = e.reason?.message ?? String(e.reason);
-    if (msg.includes("additional File object is not a file on the disk")) {
-      e.preventDefault();
-    }
-  };
-  window.addEventListener("error", suppressNonFileDragError);
-  window.addEventListener("unhandledrejection", suppressNonFileDragRejection);
+  const uninstallDragSuppression = installWailsNonFileDragErrorSuppression();
 
   rt.OnFileDrop((_x, _y, paths) => {
     if (Array.isArray(paths) && paths.length > 0) cb(paths);
   }, true);
   return () => {
     rt.OnFileDropOff?.();
-    window.removeEventListener("error", suppressNonFileDragError);
-    window.removeEventListener("unhandledrejection", suppressNonFileDragRejection);
+    uninstallDragSuppression();
   };
 }
 
@@ -447,8 +538,8 @@ function bridgeBreadcrumb(method: string): string {
     return `settings ${method}`;
   if (/^(SaveProvider|AddOfficialProviderAccess|RemoveProviderAccess|DeleteProvider|SetProviderKey|ClearProviderKey|FetchProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
-  if (/^(CheckUpdate|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
-  if (/^(AddMCPServer|UpdateMCPServer|RemoveMCPServer|ReconnectMCPServer|UpdateBuiltInMCPServer|BuiltInMCPUpdateStatuses|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
+  if (/^(CheckUpdate|DownloadUpdate|InstallUpdate|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
+  if (/^(AddMCPServer|UpdateMCPServer|RemoveMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
     return `skill ${method}`;
@@ -521,8 +612,8 @@ async function withMockTabScope<T>(tabId: string, fn: () => Promise<T>): Promise
   }
 }
 
-// Updater progress has its own listener set so the browser dev mock's ApplyUpdate
-// can stream a fake download through onUpdaterProgress.
+// Updater progress has its own listener set so the browser dev mock can stream a
+// fake download/install flow through onUpdaterProgress.
 const updaterListeners = new Set<(p: UpdateProgress) => void>();
 
 function emitUpdater(p: UpdateProgress) {
@@ -566,54 +657,6 @@ function makeMockApp(): AppBindings {
   const t0 = Date.now();
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
-    {
-      name: "codegraph",
-      transport: "stdio",
-      status: "disabled",
-      builtIn: true,
-      configured: true,
-      autoStart: false,
-      tier: "background",
-      command: "codegraph",
-      args: ["serve", "--mcp"],
-      tools: 0,
-      prompts: 0,
-      resources: 0,
-      toolList: [
-        { name: "search", description: "Search symbols, files, and text in the workspace." },
-        { name: "context", description: "Fetch surrounding source context for a symbol or file." },
-        { name: "trace", description: "Follow callers and callees across the code graph." },
-        { name: "node", description: "Inspect a specific graph node." },
-      ],
-    },
-    {
-      name: "time",
-      transport: "stdio",
-      status: "deferred",
-      builtIn: true,
-      configured: true,
-      autoStart: true,
-      tier: "lazy",
-      command: "reasonix",
-      args: ["builtin-mcp", "time"],
-      tools: 0,
-      prompts: 0,
-      resources: 0,
-    },
-    {
-      name: "context7",
-      transport: "stdio",
-      status: "disabled",
-      builtIn: true,
-      configured: true,
-      autoStart: false,
-      tier: "lazy",
-      command: "npx",
-      args: ["-y", "@upstash/context7-mcp"],
-      tools: 0,
-      prompts: 0,
-      resources: 0,
-    },
     { name: "github", transport: "stdio", status: "connected", configured: true, autoStart: true, tier: "background", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], tools: 12, prompts: 2, resources: 0 },
     {
       name: "linear",
@@ -640,15 +683,6 @@ function makeMockApp(): AppBindings {
       ],
     },
     { name: "figma", transport: "http", status: "failed", configured: true, autoStart: true, tier: "background", url: "https://mcp.figma.com/mcp", authStatus: "required", authUrl: "https://mcp.figma.com/mcp", tools: 0, prompts: 0, resources: 0, error: "connect: 401 unauthorized" },
-  ];
-  let builtInMCPUpdates: BuiltInMCPUpdateStatus[] = [
-    {
-      name: "codegraph",
-      mode: "notify",
-      current: "v0.9.7",
-      latest: "v0.10.0",
-      phase: "available",
-    },
   ];
   const capSkills: SkillView[] = [
     { name: "explore", description: "Investigate the codebase in an isolated subagent", scope: "builtin", runAs: "subagent", enabled: true },
@@ -763,13 +797,13 @@ function makeMockApp(): AppBindings {
     subagentEffort: "",
     autoPlan: "off",
     providers: [
-      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], visionModels: ["mimo-v2.5"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     officialProviders: [
-      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-      { name: "mimo-api", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "mimo-api", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], visionModels: ["mimo-v2.5", "mimo-v2-omni"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], visionModels: ["mimo-v2.5"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"] },
     sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [], shell: "auto" },
@@ -887,8 +921,8 @@ function makeMockApp(): AppBindings {
       ],
     },
     desktopLanguage: "",
-    desktopLayoutStyle: "classic",
-    desktopTheme: "light",
+    desktopLayoutStyle: "workbench",
+    desktopTheme: "auto",
     desktopThemeStyle: "graphite",
     closeBehavior: "background",
     displayMode: "compact",
@@ -896,7 +930,7 @@ function makeMockApp(): AppBindings {
     statusBarItems: [...DEFAULT_STATUS_BAR_ITEMS],
     checkUpdates: true,
     telemetry: true,
-    metrics: false,
+    metrics: true,
     configPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai"],
     autoApproveTools: false,
@@ -1203,6 +1237,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       workspaceRoot: globalWorkspaceRoot,
       workspaceName: "Global",
+      workspacePath: globalWorkspaceRoot,
       topicId: "",
       topicTitle: "Global",
       label: "DeepSeek-R1",
@@ -1221,6 +1256,8 @@ function makeMockApp(): AppBindings {
       scope: "project",
       workspaceRoot: "~/projects/joyquant-db",
       workspaceName: "joyquant-db",
+      workspacePath: "~/projects/joyquant-db",
+      gitBranch: "main",
       topicId: "topic_dev_standard",
       topicTitle: t("mock.trashDevStandardTitle"),
       projectColor: "blue",
@@ -1239,6 +1276,8 @@ function makeMockApp(): AppBindings {
       scope: "project",
       workspaceRoot: "~/projects/joyquant-sys",
       workspaceName: "joyquant-sys",
+      workspacePath: "~/projects/joyquant-sys",
+      gitBranch: "feature/p3b",
       topicId: "topic_p3b_pd",
       topicTitle: "p3b P&D",
       projectColor: "purple",
@@ -1257,6 +1296,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       workspaceRoot: "",
       workspaceName: "Global",
+      workspacePath: "~/projects/joyquant-db",
       topicId: "topic_global",
       topicTitle: "Global",
       label: "DeepSeek-R1",
@@ -1315,7 +1355,7 @@ function makeMockApp(): AppBindings {
       const trimmedInput = input.trim().toLowerCase();
       const goalMatch = /^\/goal(?:\s+([\s\S]*))?$/.exec(input.trim());
       if (goalMatch) {
-        const arg = (goalMatch[1] ?? "").trim();
+        const arg = stripGoalResearchFlags((goalMatch[1] ?? "").trim());
         const lowered = arg.toLowerCase();
         const active = mockTabs.find((tab) => tab.active);
         if (!arg || lowered === "status") {
@@ -1850,11 +1890,17 @@ function makeMockApp(): AppBindings {
           const toolApprovalMode = normalizeToolApprovalMode(active?.toolApprovalMode, active ? normalizeMode(active.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
           const collaborationMode = normalizeCollaborationMode(active?.collaborationMode, active?.goal, active ? normalizeMode(active.mode) : "normal");
+          const workspacePath = active?.workspacePath || active?.workspaceRoot || active?.cwd || cwd;
           return {
             label: active?.label ?? "DeepSeek-R1",
             ready: active?.ready ?? true,
             eventChannel: EVENT_CHANNEL,
             cwd: active?.cwd || cwd,
+            workspaceRoot: active?.workspaceRoot || workspacePath,
+            workspaceName: active?.workspaceName,
+            workspacePath,
+            sandboxPath: settings.sandbox.workspaceRoot,
+            gitBranch: active?.gitBranch || (active?.scope === "project" ? "main" : ""),
             autoApproveTools,
             bypass: autoApproveTools,
             collaborationMode,
@@ -1869,11 +1915,17 @@ function makeMockApp(): AppBindings {
           const toolApprovalMode = normalizeToolApprovalMode(tab?.toolApprovalMode, tab ? normalizeMode(tab.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
           const collaborationMode = normalizeCollaborationMode(tab?.collaborationMode, tab?.goal, tab ? normalizeMode(tab.mode) : "normal");
+          const workspacePath = tab?.workspacePath || tab?.workspaceRoot || tab?.cwd || cwd;
           return {
             label: tab?.label ?? "DeepSeek-R1",
             ready: tab?.ready ?? true,
             eventChannel: EVENT_CHANNEL,
             cwd: tab?.cwd || cwd,
+            workspaceRoot: tab?.workspaceRoot || workspacePath,
+            workspaceName: tab?.workspaceName,
+            workspacePath,
+            sandboxPath: settings.sandbox.workspaceRoot,
+            gitBranch: tab?.gitBranch || (tab?.scope === "project" ? "main" : ""),
             autoApproveTools,
             bypass: autoApproveTools,
             collaborationMode,
@@ -1898,6 +1950,15 @@ function makeMockApp(): AppBindings {
     async Capabilities() {
       return {
         servers: capServers.map((s) => ({ ...s })),
+        skills: capSkills.map((s) => ({ ...s })),
+        skillRoots: capSkillRoots.map((s) => ({ ...s })),
+      };
+    },
+    async MCPServers() {
+      return capServers.map((s) => ({ ...s }));
+    },
+    async SkillsSettings() {
+      return {
         skills: capSkills.map((s) => ({ ...s })),
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
       };
@@ -1958,28 +2019,6 @@ function makeMockApp(): AppBindings {
       capServers = capServers.map((s) =>
         s.name === name ? { ...s, status: "connected", tools: s.tools || 4 } : s,
       );
-    },
-    async UpdateBuiltInMCPServer(name: string) {
-      if (name !== "codegraph") throw new Error(`${name} is not an updatable built-in MCP server`);
-      capServers = capServers.map((s) =>
-        s.name === name
-          ? { ...s, status: s.autoStart ? "connected" : s.status, tools: s.autoStart ? s.tools || 4 : s.tools, error: undefined }
-          : s,
-      );
-      builtInMCPUpdates = [
-        {
-          name,
-          mode: "manual",
-          current: "v0.10.0",
-          latest: "v0.10.0",
-          phase: "activated",
-          path: "/tmp/reasonix/codegraph/mock/codegraph",
-        },
-      ];
-      return { name, version: "v0.10.0", path: "/tmp/reasonix/codegraph/mock/codegraph" };
-    },
-    async BuiltInMCPUpdateStatuses() {
-      return builtInMCPUpdates.map((s) => ({ ...s }));
     },
     async ClearMCPServerAuthentication(name: string) {
       capServers = capServers.map((s) =>
@@ -2125,7 +2164,7 @@ function makeMockApp(): AppBindings {
         binary: false,
       };
     },
-    async WorkspaceChanges() {
+    async WorkspaceChanges(_tabID: string) {
       return {
         gitAvailable: true,
         gitBranch: "main",
@@ -2164,12 +2203,12 @@ function makeMockApp(): AppBindings {
         "internal/agent/coordinator.go",
       ];
     },
-    async WorkspaceGitHistory(path: string) {
+    async WorkspaceGitHistory(_tabID: string, path: string) {
       return [
         { hash: "abcdef123456", author: "Mock Author", date: new Date().toISOString(), message: "Mock commit message for " + path },
       ];
     },
-    async WorkspaceGitCommitDetail(_hash: string, path: string) {
+    async WorkspaceGitCommitDetail(_tabID: string, _hash: string, path: string) {
       if (path) {
         return { diff: "--- a/mock\n+++ b/mock\n@@ -1,1 +1,1 @@\n-mock\n+mock diff" };
       }
@@ -2366,6 +2405,20 @@ function makeMockApp(): AppBindings {
     async SaveDocForTab(_tabID: string, path: string, body: string) {
       return this.SaveDoc(path, body);
     },
+    async DesktopStartupSettings() {
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, statusBarStyle, statusBarItems, checkUpdates } = settings;
+      return JSON.parse(JSON.stringify({
+        bot,
+        desktopLanguage,
+        desktopLayoutStyle,
+        desktopTheme,
+        desktopThemeStyle,
+        displayMode,
+        statusBarStyle,
+        statusBarItems,
+        checkUpdates,
+      })) as DesktopStartupSettingsView;
+    },
     async Settings() {
       return JSON.parse(JSON.stringify(settings)) as SettingsView;
     },
@@ -2412,18 +2465,19 @@ function makeMockApp(): AppBindings {
     },
     async AddOfficialProviderAccess(kind: string, key: string) {
       const templates: Record<string, ProviderView> = {
-        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-        "mimo-api": { name: "mimo-api", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-        "mimo-token-plan": { name: "mimo-token-plan", builtIn: true, added: true, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        "mimo-api": { name: "mimo-api", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], visionModels: ["mimo-v2.5", "mimo-v2-omni"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        "mimo-token-plan": { name: "mimo-token-plan", builtIn: true, added: true, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], visionModels: ["mimo-v2.5"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
       };
       const next = templates[kind] ?? templates.deepseek;
       const i = settings.providers.findIndex((x) => x.name === next.name);
       if (i >= 0) settings.providers[i] = { ...settings.providers[i], ...next, keySet: next.keySet || settings.providers[i].keySet };
       else settings.providers.push(next);
+      return "";
     },
     async FetchProviderModels(p: ProviderView) {
       if (!p.baseUrl.trim()) throw new Error(t("settings.fetchModelsMissingBaseUrl"));
-      if (!p.apiKeyEnv.trim()) throw new Error(t("settings.fetchModelsMissingKeyEnv"));
+      if (providerRequiresKey(p) && !p.apiKeyEnv.trim()) throw new Error(t("settings.fetchModelsMissingKeyEnv"));
       await delay(350);
       if (p.baseUrl.includes("deepseek")) return ["deepseek-v4-flash", "deepseek-v4-pro"];
       if (p.baseUrl.includes("mimo") || p.baseUrl.includes("xiaomimimo")) return ["mimo-v2.5", "mimo-v2.5-pro"];
@@ -2441,6 +2495,7 @@ function makeMockApp(): AppBindings {
       settings.providers.forEach((p) => {
         if (p.apiKeyEnv === apiKeyEnv) p.keySet = true;
       });
+      return "";
     },
     async ClearProviderKey(apiKeyEnv: string) {
       settings.providers.forEach((p) => {
@@ -2608,6 +2663,12 @@ function makeMockApp(): AppBindings {
       const normalized = lang === "zh" || lang === "en" ? lang : "auto";
       settings.agent = { ...settings.agent, reasoningLanguage: normalized };
     },
+    // ── Heartbeat mock ──
+    async HeartbeatListTasks() { return []; },
+    async HeartbeatReloadTasks() { return []; },
+    async HeartbeatSaveTasks(_tasks: unknown) {},
+    async HeartbeatTriggerNow(_id: string) {},
+    async HeartbeatGenerateID() { return "mock-" + Date.now().toString(36); },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {
       await this.SetToolApprovalMode(on ? "yolo" : "ask");
@@ -2620,18 +2681,22 @@ function makeMockApp(): AppBindings {
     },
     async CheckUpdate() {
       // Keep the default browser preview focused on the primary product surface.
-      // ApplyUpdate remains mocked for explicit updater-flow tests.
+      // DownloadUpdate/InstallUpdate remain mocked for explicit updater-flow tests.
       return {
         available: false,
         current: "v1.0.0",
         latest: "v1.0.0",
         notes: "",
+        channel: "stable",
         canSelfUpdate: false,
+        manualOnly: true,
+        manualReason: "browser preview",
+        downloaded: false,
         downloadUrl: "",
         assetSize: 0,
       };
     },
-    async ApplyUpdate() {
+    async DownloadUpdate() {
       const total = 12_345_678;
       for (let r = 0; r <= total; r += 1_800_000) {
         emitUpdater({ phase: "downloading", received: Math.min(r, total), total });
@@ -2639,10 +2704,19 @@ function makeMockApp(): AppBindings {
       }
       emitUpdater({ phase: "verifying", received: total, total });
       await delay(500);
-      emitUpdater({ phase: "applying", received: total, total });
+      emitUpdater({ phase: "downloaded", received: total, total });
+      return { version: "v1.1.0", channel: "stable", path: "/tmp/reasonix-update", size: total, sha256: "mock" };
+    },
+    async InstallUpdate() {
+      const total = 12_345_678;
+      emitUpdater({ phase: "installing", received: total, total });
       await delay(500);
       emitUpdater({ phase: "done", received: total, total });
       // The real shell relaunches here; the mock just stops.
+    },
+    async ApplyUpdate() {
+      await this.DownloadUpdate();
+      await this.InstallUpdate();
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
@@ -2660,6 +2734,7 @@ function makeMockApp(): AppBindings {
         if (p.apiKeyEnv === "DEEPSEEK_API_KEY") p.keySet = true;
       });
       await delay(300);
+      return "";
     },
     async ReportCrash() {
       await delay(300);
@@ -2680,6 +2755,8 @@ function makeMockApp(): AppBindings {
         scope: "project",
         workspaceRoot,
         workspaceName: workspaceRoot.split("/").filter(Boolean).pop() ?? workspaceRoot,
+        workspacePath: workspaceRoot,
+        gitBranch: "main",
         topicId: _topicID,
         topicTitle: topicLabel(_topicID, t("mock.newSession")),
         sessionPath: `/mock/sessions/${_topicID}.jsonl`,
@@ -2708,6 +2785,7 @@ function makeMockApp(): AppBindings {
         scope: "global",
         workspaceRoot: "",
         workspaceName: "Global",
+        workspacePath: cwd,
         topicId: _topicID,
         topicTitle: topicLabel(_topicID, "Global"),
         sessionPath: `/mock/sessions/${_topicID}.jsonl`,
@@ -2864,6 +2942,8 @@ function makeMockApp(): AppBindings {
     },
     async ContextPanel(_tabID: string) {
       const now = Date.now();
+      const currency = "¥";
+      const cost = (usd: number) => currency === "¥" ? Number((usd * 7.15).toFixed(4)) : usd;
       return {
         usedTokens: 42124,
         windowTokens: 128000,
@@ -2875,9 +2955,9 @@ function makeMockApp(): AppBindings {
         cacheMissTokens: 13000,
         requestCount: 10,
         elapsedMs: 33 * 60 * 1000,
-        sessionCost: 0.018,
-        sessionCurrency: "$",
-        sessionCostUsd: 0.018,
+        sessionCost: cost(0.018),
+        sessionCurrency: currency,
+        sessionCostUsd: cost(0.018),
         sources: {
           executor: {
             promptTokens: 24100,
@@ -2887,9 +2967,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 76000,
             cacheMissTokens: 9000,
             requestCount: 4,
-            sessionCost: 0.0124,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0124,
+            sessionCost: cost(0.0124),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0124),
           },
           planner: {
             promptTokens: 1800,
@@ -2899,9 +2979,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 3400,
             cacheMissTokens: 700,
             requestCount: 1,
-            sessionCost: 0.0011,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0011,
+            sessionCost: cost(0.0011),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0011),
           },
           subagent: {
             promptTokens: 4200,
@@ -2911,9 +2991,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 6100,
             cacheMissTokens: 2100,
             requestCount: 2,
-            sessionCost: 0.0032,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0032,
+            sessionCost: cost(0.0032),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0032),
           },
           compaction: {
             promptTokens: 2600,
@@ -2923,9 +3003,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 1100,
             cacheMissTokens: 900,
             requestCount: 1,
-            sessionCost: 0.0009,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0009,
+            sessionCost: cost(0.0009),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0009),
           },
           classifier: {
             promptTokens: 900,
@@ -2935,9 +3015,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 300,
             cacheMissTokens: 250,
             requestCount: 1,
-            sessionCost: 0.0003,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0003,
+            sessionCost: cost(0.0003),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0003),
           },
           title: {
             promptTokens: 420,
@@ -2947,9 +3027,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 100,
             cacheMissTokens: 50,
             requestCount: 1,
-            sessionCost: 0.0001,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0001,
+            sessionCost: cost(0.0001),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0001),
           },
         },
         mock: true,

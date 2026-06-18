@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,18 @@ import (
 type typedNilControllerSink struct{}
 
 func (*typedNilControllerSink) Emit(event.Event) {}
+
+func isolateControlConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	t.Chdir(t.TempDir())
+	return home
+}
 
 type appendingRunner struct {
 	session *agent.Session
@@ -69,11 +82,158 @@ func (fakeControlTool) Execute(context.Context, json.RawMessage) (string, error)
 }
 func (fakeControlTool) ReadOnly() bool { return true }
 
+type startBackgroundJobTool struct {
+	started chan string
+	release chan struct{}
+}
+
+func (t startBackgroundJobTool) Name() string        { return "start_background_job" }
+func (t startBackgroundJobTool) Description() string { return "start background job" }
+func (t startBackgroundJobTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object"}`)
+}
+func (t startBackgroundJobTool) ReadOnly() bool { return false }
+func (t startBackgroundJobTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	jm, ok := jobs.FromContext(ctx)
+	if !ok {
+		return "", nil
+	}
+	j := jm.StartForSession(jobs.SessionFromContext(ctx), "bash", "controller", func(_ context.Context, out io.Writer) (string, error) {
+		_, _ = io.WriteString(out, "before\n")
+		<-t.release
+		_, _ = io.WriteString(out, "after\n")
+		return "", nil
+	})
+	t.started <- j.ID
+	return "started " + j.ID, nil
+}
+
+type recordingProvider struct {
+	name     string
+	streams  [][]provider.Chunk
+	requests []provider.Request
+}
+
+func (p *recordingProvider) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return "recording"
+}
+
+func (p *recordingProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	p.requests = append(p.requests, req)
+	i := len(p.requests) - 1
+	if i >= len(p.streams) {
+		i = len(p.streams) - 1
+	}
+	chunks := p.streams[i]
+	ch := make(chan provider.Chunk, len(chunks))
+	for _, c := range chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch, nil
+}
+
+func requestMessagesText(messages []provider.Message) string {
+	var b strings.Builder
+	for _, m := range messages {
+		b.WriteString(string(m.Role))
+		b.WriteString(": ")
+		b.WriteString(m.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 func TestNewTreatsTypedNilSinkAsDiscard(t *testing.T) {
 	var sink *typedNilControllerSink
 	c := New(Options{Sink: sink})
 
 	c.notice("typed nil sink should not panic")
+}
+
+func TestClearSessionMarksCleanupPendingBeforeReturningForRunningJobs(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte(`{"role":"user","content":"old"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	jm := jobs.NewManager(event.Discard)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	defer func() {
+		close(release)
+		jm.Close()
+	}()
+	jm.StartForSession(agent.BranchID(oldPath), "task", "stuck clear", func(ctx context.Context, _ io.Writer) (string, error) {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return "", ctx.Err()
+	})
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background job never started")
+	}
+
+	ctrl := New(Options{Executor: exec, SessionDir: dir, SessionPath: oldPath, Label: "test", Jobs: jm})
+	if err := ctrl.ClearSession(); err != nil {
+		t.Fatalf("ClearSession: %v", err)
+	}
+	if !agent.IsCleanupPending(oldPath) {
+		t.Fatalf("old session should be cleanup-pending before ClearSession returns")
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("old session file should remain until delayed cleanup: %v", err)
+	}
+	sessions, err := agent.ListSessions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		if filepath.Clean(session.Path) == filepath.Clean(oldPath) {
+			t.Fatalf("cleanup-pending old session still listed: %+v", sessions)
+		}
+	}
+}
+
+func TestReconcileCleanupPendingRemovesOrphanedArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orphan.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"orphan"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(path, agent.BranchMeta{Name: "orphan"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(jobs.ArtifactDir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobs.ArtifactDir(path), "job.log"), []byte("job output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ckptDir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.MarkCleanupPending(path, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileCleanupPending(dir); err != nil {
+		t.Fatalf("ReconcileCleanupPending: %v", err)
+	}
+	for _, p := range []string{path, agent.BranchMetaPath(path), jobs.ArtifactDir(path), ckptDir(path), agent.CleanupPendingPath(path)} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after reconciliation (err=%v)", p, err)
+		}
+	}
 }
 
 func TestRunTurnSnapshotsActivityWhenTranscriptChanges(t *testing.T) {
@@ -123,6 +283,62 @@ func TestRunInjectsParentSessionForJobs(t *testing.T) {
 	}
 }
 
+func TestSetSessionPathAdoptsTemporaryBackgroundJobs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	jm := jobs.NewManager(event.Discard)
+	reg := tool.NewRegistry()
+	reg.Add(startBackgroundJobTool{started: started, release: release})
+	prov := &scriptedTurns{turns: [][]provider.Chunk{
+		toolCallTurn("call-1", "start_background_job", `{}`),
+		textTurn("done"),
+	}}
+	ag := agent.New(prov, reg, agent.NewSession("sys"), agent.Options{Jobs: jm}, event.Discard)
+	c := New(Options{Runner: ag, Executor: ag, SessionDir: dir, Label: "test", Jobs: jm})
+	defer c.Close()
+
+	if err := c.Run(context.Background(), "start background job"); err != nil {
+		t.Fatal(err)
+	}
+	jobID := <-started
+	c.SetSessionPath(path)
+	close(release)
+
+	parentSession := agent.BranchID(path)
+	res := c.jobs.WaitForSession(context.Background(), parentSession, []string{jobID}, 1)
+	if len(res) != 1 || !strings.Contains(res[0].Output, "before\n") || !strings.Contains(res[0].Output, "after\n") {
+		t.Fatalf("adopted controller job = %+v, want before/after output", res)
+	}
+	if _, err := os.Stat(filepath.Join(jobs.ArtifactDir(path), jobID+".log")); err != nil {
+		t.Fatalf("controller job artifact should be under persistent sidecar: %v", err)
+	}
+}
+
+func TestGoalStatePersistsNextToSessionPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	c.SetGoalWithResearchMode("fix the typo", GoalResearchOn)
+	c.GoalStrict(true)
+
+	data, err := os.ReadFile(goalStatePath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state goalState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Goal != "fix the typo" || state.Status != GoalStatusRunning || state.ResearchMode != GoalResearchOn || !state.Strict {
+		t.Fatalf("goal state = %+v, want running strict research goal", state)
+	}
+}
+
 func TestRunTurnRecordsDisplayForPersistedUserMessage(t *testing.T) {
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
@@ -150,7 +366,7 @@ func TestSnapshotDoesNotRefreshSessionActivity(t *testing.T) {
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", ModelRef: "provider/model-a"})
 	c.SetSessionPath(filepath.Join(dir, "session.jsonl"))
 
 	if err := c.SnapshotActivity(); err != nil {
@@ -172,6 +388,9 @@ func TestSnapshotDoesNotRefreshSessionActivity(t *testing.T) {
 	}
 	if !second.UpdatedAt.Equal(first.UpdatedAt) {
 		t.Fatalf("Snapshot refreshed activity: first=%s second=%s", first.UpdatedAt, second.UpdatedAt)
+	}
+	if second.Model != "provider/model-a" {
+		t.Fatalf("snapshot model = %q, want provider/model-a", second.Model)
 	}
 }
 
@@ -205,6 +424,32 @@ func TestSnapshotActivityRefreshesSessionActivity(t *testing.T) {
 	}
 }
 
+func TestSnapshotActivitySavesTranscriptBeforeModelMeta(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "must persist"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test", ModelRef: "provider/model-a"})
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agent.BranchMetaPath(path), []byte("{bad json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.SnapshotActivity(); err == nil {
+		t.Fatal("SnapshotActivity should report malformed branch metadata")
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("transcript was not saved before metadata error: %v", err)
+	}
+	if len(loaded.Messages) == 0 || loaded.Messages[len(loaded.Messages)-1].Content != "must persist" {
+		t.Fatalf("saved transcript = %+v, want persisted user message", loaded.Messages)
+	}
+}
+
 func TestNewSessionStartsFreshContextAndSavesTranscript(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSession("sys")
@@ -229,6 +474,81 @@ func TestNewSessionStartsFreshContextAndSavesTranscript(t *testing.T) {
 	current := exec.Session().Snapshot()
 	if len(current) != 1 || current[0].Role != provider.RoleSystem || current[0].Content != "sys" {
 		t.Fatalf("fresh context = %+v, want only system prompt", current)
+	}
+}
+
+func TestNewSessionResetsTwoModelPlannerContext(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("OLD PLAN: inspect alpha.go"),
+		textTurn("NEW PLAN: inspect beta.go"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("old done"),
+		textTurn("new done"),
+	}}
+	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
+	plannerSess := agent.NewSession("planner sys")
+	coord := agent.NewCoordinator(planner, plannerSess, nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+	path := filepath.Join(dir, "session.jsonl")
+	c := New(Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: path, Label: "test"})
+
+	if err := c.Run(context.Background(), "old task alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background(), "new task beta"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(planner.requests) != 2 {
+		t.Fatalf("planner requests = %d, want 2", len(planner.requests))
+	}
+	second := requestMessagesText(planner.requests[1].Messages)
+	if strings.Contains(second, "old task alpha") || strings.Contains(second, "OLD PLAN") {
+		t.Fatalf("new planner request leaked previous session context:\n%s", second)
+	}
+	if !strings.Contains(second, "new task beta") {
+		t.Fatalf("new planner request missing current task:\n%s", second)
+	}
+}
+
+func TestResumeResetsTwoModelPlannerContext(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("OLD PLAN: inspect alpha.go"),
+		textTurn("RESUMED PLAN: inspect gamma.go"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("old done"),
+		textTurn("resumed done"),
+	}}
+	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
+	plannerSess := agent.NewSession("planner sys")
+	coord := agent.NewCoordinator(planner, plannerSess, nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+	c := New(Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: filepath.Join(dir, "old.jsonl"), Label: "test"})
+
+	if err := c.Run(context.Background(), "old task alpha"); err != nil {
+		t.Fatal(err)
+	}
+	resumed := agent.NewSession("exec sys")
+	resumed.Add(provider.Message{Role: provider.RoleUser, Content: "saved task gamma"})
+	c.Resume(resumed, filepath.Join(dir, "resumed.jsonl"))
+	if err := c.Run(context.Background(), "continue gamma"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(planner.requests) != 2 {
+		t.Fatalf("planner requests = %d, want 2", len(planner.requests))
+	}
+	second := requestMessagesText(planner.requests[1].Messages)
+	if strings.Contains(second, "old task alpha") || strings.Contains(second, "OLD PLAN") {
+		t.Fatalf("resumed planner request leaked previous session context:\n%s", second)
+	}
+	if !strings.Contains(second, "continue gamma") {
+		t.Fatalf("resumed planner request missing current task:\n%s", second)
 	}
 }
 
@@ -332,7 +652,13 @@ func TestDisconnectMCPServerRemovesLazyPlaceholder(t *testing.T) {
 }
 
 func TestRemoveMCPServerRemovesUnconnectedLazyPlaceholder(t *testing.T) {
+	isolateControlConfigHome(t)
 	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	t.Chdir(dir)
 	if err := os.WriteFile("reasonix.toml", []byte(`
 [[plugins]]

@@ -4,7 +4,7 @@
 // new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, ArrowDown, ChevronRight, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, SquarePen, Minimize2, Maximize2 } from "lucide-react";
+import { Archive, ArrowDown, Pencil, Plus, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, MoreHorizontal, Minimize2, Maximize2 } from "lucide-react";
 import { asArray } from "../lib/array";
 import { app } from "../lib/bridge";
 import type { ProjectNode, ProjectTopicStatus } from "../lib/types";
@@ -69,9 +69,28 @@ export function projectTreeTopicOpenRequest(node: ProjectNode): ProjectTreeTopic
   };
 }
 
+export type ProjectTreeFolderDisclosure = {
+  canExpand: boolean;
+  isOpen: boolean;
+  ariaExpanded?: boolean;
+  iconStackClassName: string;
+};
+
+export function projectTreeFolderDisclosure(hasChildren: boolean, isExpanded: boolean): ProjectTreeFolderDisclosure {
+  const canExpand = hasChildren;
+  const isOpen = canExpand && isExpanded;
+  return {
+    canExpand,
+    isOpen,
+    ariaExpanded: canExpand ? isExpanded : undefined,
+    iconStackClassName: `project-tree__icon-stack${canExpand ? " project-tree__icon-stack--expandable" : ""}`,
+  };
+}
+
 function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceRoot?: string, activeTopicId?: string, activeSessionPath?: string): boolean {
   if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return false;
   if (node.sessionPath) return Boolean(activeSessionPath && activeSessionPath === node.sessionPath);
+  if (activeSessionPath && asArray(node.children).some(isRuntimeSessionNode)) return false;
   const scope = node.kind === "global_topic" ? "global" : "project";
   return (
     activeTopicId === node.topicId &&
@@ -229,20 +248,36 @@ function collapsibleFolderKeys(nodes: ProjectNode[], depth = 0): string[] {
   return keys;
 }
 
-export function defaultExpandedProjectTreeKeys(nodes: ProjectNode[], depth = 0): string[] {
-  const keys: string[] = [];
-  for (const node of nodes) {
-    if (!node) continue;
-    const children = asArray(node.children);
-    if ((node.kind === "project" || node.kind === "global_folder") && children.length > 0) {
-      keys.push(projectNodeKey(node, depth));
+export function activeSessionAncestorKeys(
+  nodes: ProjectNode[],
+  activeScope?: string,
+  activeWorkspaceRoot?: string,
+  activeTopicId?: string,
+  activeSessionPath?: string,
+): string[] {
+  const walk = (nodeList: ProjectNode[], ancestors: string[]): string[] | null => {
+    for (const node of nodeList) {
+      if (!node) continue;
+      if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) return ancestors;
+      const children = asArray(node.children);
+      if (children.length > 0) {
+        const next = walk(children, [...ancestors, projectNodeKey(node, ancestors.length)]);
+        if (next) return next;
+      }
     }
-    if (isTopicNode(node) && children.some(isRuntimeSessionNode)) {
-      keys.push(projectNodeKey(node, depth));
-    }
-    keys.push(...defaultExpandedProjectTreeKeys(children, depth + 1));
-  }
-  return keys;
+    return null;
+  };
+  return walk(nodes, []) ?? [];
+}
+
+export function defaultExpandedProjectTreeKeys(
+  nodes: ProjectNode[],
+  activeScope?: string,
+  activeWorkspaceRoot?: string,
+  activeTopicId?: string,
+  activeSessionPath?: string,
+): string[] {
+  return activeSessionAncestorKeys(nodes, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
 }
 
 function reorderedProjectRoots(nodes: ProjectNode[], draggedRoot: string, targetRoot: string, position: ProjectDropPosition): string[] {
@@ -462,7 +497,7 @@ export function ProjectTree({
       setExpanded((prev) => {
         const next = new Set(prev);
         const collapsed = manuallyCollapsedRef.current;
-        for (const key of defaultExpandedProjectTreeKeys(list)) {
+        for (const key of defaultExpandedProjectTreeKeys(list, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) {
           if (!collapsed.has(key)) next.add(key);
         }
         return next;
@@ -470,7 +505,7 @@ export function ProjectTree({
     } catch {
       /* bridge unavailable */
     }
-  }, []);
+  }, [activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath]);
 
   useEffect(() => {
     manuallyCollapsedRef.current = manuallyCollapsed;
@@ -885,21 +920,10 @@ export function ProjectTree({
     };
   }, [clearProjectDrag, dragProjectRoot]);
 
-  const activeAncestorKeys = useMemo(() => {
-    const walk = (nodes: ProjectNode[], ancestors: string[]): string[] | null => {
-      for (const node of nodes) {
-        if (!node) continue;
-        if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) return ancestors;
-        const children = asArray(node.children);
-        if (children.length > 0) {
-          const next = walk(children, [...ancestors, projectNodeKey(node, ancestors.length)]);
-          if (next) return next;
-        }
-      }
-      return null;
-    };
-    return walk(tree, []) ?? [];
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, tree]);
+  const activeAncestorKeys = useMemo(
+    () => activeSessionAncestorKeys(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
+    [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, tree],
+  );
 
   useEffect(() => {
     if (activeAncestorKeys.length === 0) return;
@@ -921,6 +945,7 @@ export function ProjectTree({
     const children = asArray(node.children);
     const isExpanded = query.trim() ? true : expanded.has(key);
     const hasChildren = children.length > 0;
+    const folderDisclosure = projectTreeFolderDisclosure(hasChildren, isExpanded);
 
     if (isTopicNode(node) || isRuntimeSessionNode(node)) {
       const isSessionNode = isRuntimeSessionNode(node);
@@ -1046,8 +1071,8 @@ export function ProjectTree({
                 </span>
               )}
             </span>
-            {compactTopics && (timeLabel || showStatusInSide) && (
-              <span className="project-tree__topic-side" aria-hidden="true">
+            {compactTopics && (
+              <span className={`project-tree__topic-side${!timeLabel && !showStatusInSide ? " project-tree__topic-side--empty" : ""}`} aria-hidden="true">
                 {showStatusInSide && <span className={`project-tree__topic-state project-tree__topic-state--${status}`} title={statusLabel} />}
                 {timeLabel && <span className="project-tree__topic-time">{timeLabel}</span>}
               </span>
@@ -1325,7 +1350,7 @@ export function ProjectTree({
 
     if (editingProject?.key === key) {
       return (
-        <div key={key}>
+        <div key={key} className="project-tree__project-wrapper">
           <div
             className={`project-tree__folder project-tree__folder--editing${projectActive ? " project-tree__folder--active" : ""}`}
             style={{ paddingLeft: 8 + depth * 16 }}
@@ -1354,7 +1379,7 @@ export function ProjectTree({
     }
 
     return (
-      <div key={key}>
+      <div key={key} className="project-tree__project-wrapper">
         <div
           className={`project-tree__folder${scopeClass}${pinnedClass}${draggableProject ? " project-tree__folder--draggable" : ""}${projectActive ? " project-tree__folder--active" : ""}${projectMenuOpen ? " project-tree__folder--menu-open" : ""}${dragProjectRoot === projectDragKey ? " project-tree__folder--dragging" : ""}${projectDropPosition ? ` project-tree__folder--drop-${projectDropPosition}` : ""}`}
           style={accentStyle}
@@ -1374,25 +1399,20 @@ export function ProjectTree({
             className="project-tree__folder-main"
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
-              if (hasChildren) toggleExpand(key);
+              if (folderDisclosure.canExpand) toggleExpand(key);
             }}
             onKeyDown={(event) => {
               if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
                 openProjectMenu(event);
               }
             }}
-            aria-expanded={hasChildren ? isExpanded : undefined}
+            aria-expanded={folderDisclosure.ariaExpanded}
           >
-            {hasChildren ? (
-              <span className={`project-tree__chevron${isExpanded ? " project-tree__chevron--open" : ""}`}>
-                <ChevronRight size={12} />
-              </span>
-            ) : (
-              <span style={{ width: 12 }} />
-            )}
-            <Folder size={12} />
+            <span className={folderDisclosure.iconStackClassName}>
+              {folderDisclosure.isOpen ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
+            </span>
             <span className="project-tree__folder-color" aria-hidden="true" />
-            <span className="project-tree__folder-label">{projectLabel}</span>
+            <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>{projectLabel}</span>
           </button>
           {compactTopics && (
             <Tooltip label={t("projectTree.projectActions")} className="project-tree__folder-action-slot">
@@ -1423,7 +1443,7 @@ export function ProjectTree({
                 void handleCreateTopic(scope, projectRoot, key);
               }}
             >
-              {compactTopics ? <SquarePen size={15} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+              {compactTopics ? <Plus size={15} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
             </button>
           </Tooltip>
           <ContextMenu
@@ -1801,24 +1821,26 @@ export function ProjectTree({
         />
       </label>
       {compactTopics ? (
-        <div className="project-tree__list project-tree__list--workbench">
-          {!hasWorkbenchRows ? (
-            renderEmptyState()
-          ) : (
-            <>
-              {workbenchTreeSections.pinned.length > 0 && (
-                <div className="project-tree__section project-tree__section--pinned">
-                  <div className="project-tree__section-title">{t("projectTree.pinnedTitle")}</div>
-                  {workbenchTreeSections.pinned.map((node) => renderNode(node, 0, "pinned"))}
+        <>
+          {renderProjectHeader("workbench")}
+          <div className="project-tree__list project-tree__list--workbench">
+            {!hasWorkbenchRows ? (
+              renderEmptyState()
+            ) : (
+              <>
+                {workbenchTreeSections.pinned.length > 0 && (
+                  <div className="project-tree__section project-tree__section--pinned">
+                    <div className="project-tree__section-title">{t("projectTree.pinnedTitle")}</div>
+                    {workbenchTreeSections.pinned.map((node) => renderNode(node, 0, "pinned"))}
+                  </div>
+                )}
+                <div className="project-tree__section project-tree__section--projects">
+                  {workbenchTreeSections.projects.map((node) => renderNode(node, 0, "projects"))}
                 </div>
-              )}
-              <div className="project-tree__section project-tree__section--projects">
-                {renderProjectHeader("workbench")}
-                {workbenchTreeSections.projects.map((node) => renderNode(node, 0, "projects"))}
-              </div>
-            </>
-          )}
-        </div>
+              </>
+            )}
+          </div>
+        </>
       ) : (
         <>
           {renderProjectHeader("classic")}

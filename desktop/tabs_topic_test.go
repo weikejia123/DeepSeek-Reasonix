@@ -512,6 +512,184 @@ func TestBuildTabControllerRestoresPinnedSessionBeforeTopicFallback(t *testing.T
 	}
 }
 
+func TestBuildTabControllerUsesPinnedSessionMetaWorkspace(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	if err := addProject(projectA, "Project A"); err != nil {
+		t.Fatalf("add project A: %v", err)
+	}
+	if err := addProject(projectB, "Project B"); err != nil {
+		t.Fatalf("add project B: %v", err)
+	}
+
+	topicID := "topic_restore_workspace"
+	topicTitle := "Restore workspace"
+	sessionDirA := desktopSessionDir(projectA)
+	if err := os.MkdirAll(sessionDirA, 0o755); err != nil {
+		t.Fatalf("mkdir project A sessions: %v", err)
+	}
+	pinned := writeTopicSessionWithPrompt(t, sessionDirA, "project-a.jsonl", topicID, topicTitle, projectA, "project A prompt", time.Now())
+
+	app := NewApp()
+	tab := app.createTabEntryWithID("project", projectB, topicID, "tab_stale_workspace")
+	tab.TopicTitle = topicTitle
+	tab.SessionPath = pinned
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	app.buildTabController(tab)
+	if tab.Ctrl == nil {
+		t.Fatalf("tab controller was not built: %s", tab.StartupErr)
+	}
+	defer tab.Ctrl.Close()
+
+	if got := filepath.Clean(tab.Ctrl.SessionPath()); got != filepath.Clean(pinned) {
+		t.Fatalf("restored session path = %q, want pinned %q", got, pinned)
+	}
+	if got := normalizeProjectRoot(tab.WorkspaceRoot); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("tab workspace root = %q, want project A %q", got, normalizeProjectRoot(projectA))
+	}
+	history := tab.Ctrl.History()
+	if len(history) == 0 || history[0].Content != "project A prompt" {
+		t.Fatalf("restored history = %+v, want project A prompt", history)
+	}
+}
+
+func TestBuildTabControllerIgnoresStaleSessionModelWhenTabModelResolves(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("REASONIX_TEST_KEY", "sk-test")
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+default_model = "default-provider/default-model"
+
+[[providers]]
+name = "default-provider"
+kind = "openai"
+base_url = "https://default.invalid/v1"
+model = "default-model"
+api_key_env = "REASONIX_TEST_KEY"
+
+[[providers]]
+name = "tab-provider"
+kind = "openai"
+base_url = "https://tab.invalid/v1"
+model = "tab-model"
+api_key_env = "REASONIX_TEST_KEY"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	pinned := writeLegacySession(t, dir, "stale-model.jsonl", "resume with tab model", time.Now())
+	meta, err := agent.EnsureBranchMeta(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Model = "missing-provider/missing-model"
+	if err := agent.SaveBranchMetaPreserveUpdated(pinned, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	tab := app.createTabEntryWithID("global", globalTabWorkspaceRoot(), "", "tab_stale_model")
+	tab.SessionPath = pinned
+	tab.model = "tab-provider/tab-model"
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	app.buildTabController(tab)
+	if tab.Ctrl == nil {
+		t.Fatalf("tab controller was not built: %s", tab.StartupErr)
+	}
+	defer tab.Ctrl.Close()
+	if tab.model != "tab-provider/tab-model" {
+		t.Fatalf("tab model = %q, want valid tab model", tab.model)
+	}
+}
+
+func TestLoadPinnedTabSessionFallsBackToMigratedBasename(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := writeLegacySession(t, dir, "migrated-tab.jsonl", "resume after path migration", time.Now())
+	oldPath := filepath.Join(t.TempDir(), "old-reasonix", "projects", "slug", "sessions", filepath.Base(path))
+
+	loaded, pinnedPath, ok := loadPinnedTabSession(dir, oldPath)
+	if !ok || loaded == nil {
+		t.Fatalf("loadPinnedTabSession did not recover migrated basename: ok=%v loaded=%v path=%q", ok, loaded, pinnedPath)
+	}
+	if filepath.Clean(pinnedPath) != filepath.Clean(path) {
+		t.Fatalf("pinned path = %q, want %q", pinnedPath, path)
+	}
+}
+
+func TestLoadPinnedTabSessionSkipsCleanupPending(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := writeLegacySession(t, dir, "pending-pinned.jsonl", "pending pinned", time.Now())
+	if err := agent.MarkCleanupPending(path, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	if loaded, pinnedPath, ok := loadPinnedTabSession(dir, path); ok || loaded != nil || pinnedPath != "" {
+		t.Fatalf("loadPinnedTabSession cleanup-pending = loaded:%v path:%q ok:%v, want skipped", loaded, pinnedPath, ok)
+	}
+}
+
+func TestBuildTabControllerSkipsCleanupPendingPinnedSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	pending := writeLegacySession(t, dir, "pending-startup.jsonl", "pending startup", time.Now())
+	if err := agent.MarkCleanupPending(pending, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	tab := app.createTabEntryWithID("global", globalTabWorkspaceRoot(), "", "tab_pending")
+	tab.SessionPath = pending
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	app.buildTabController(tab)
+	if tab.Ctrl == nil {
+		t.Fatalf("tab controller was not built: %s", tab.StartupErr)
+	}
+	defer tab.Ctrl.Close()
+
+	if got := filepath.Clean(tab.Ctrl.SessionPath()); got == filepath.Clean(pending) {
+		t.Fatalf("startup bound cleanup-pending pinned session path %q", got)
+	}
+	for _, msg := range tab.Ctrl.History() {
+		if msg.Content == "pending startup" {
+			t.Fatalf("startup loaded cleanup-pending history: %+v", tab.Ctrl.History())
+		}
+	}
+}
+
 func TestBuildTabControllerKeepsMissingPinnedSessionPath(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -1585,6 +1763,73 @@ func TestFindTopicSessionIndexRefreshesWhenMetaChanges(t *testing.T) {
 	}
 	if got := findTopicSession(dir, "topic_cache_other"); got != second {
 		t.Fatalf("lookup for retopic session = %q, want %q", got, second)
+	}
+}
+
+func TestFindTopicSessionSkipsCleanupPending(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	topicID := "topic_skip_pending"
+	now := time.Now().UTC()
+	normal := writeTopicSessionWithPrompt(t, dir, "normal.jsonl", topicID, "Normal", "", "normal prompt", now)
+	pending := writeTopicSessionWithPrompt(t, dir, "pending.jsonl", topicID, "Pending", "", "pending prompt", now.Add(time.Hour))
+
+	if got := findTopicSession(dir, topicID); got != pending {
+		t.Fatalf("pre-marker lookup = %q, want newest pending %q", got, pending)
+	}
+	if err := agent.MarkCleanupPending(pending, "delete"); err != nil {
+		t.Fatal(err)
+	}
+	if got := findTopicSession(dir, topicID); got != normal {
+		t.Fatalf("lookup with cleanup-pending newest = %q, want normal %q", got, normal)
+	}
+	if err := agent.MarkCleanupPending(normal, "delete"); err != nil {
+		t.Fatal(err)
+	}
+	if got := findTopicSession(dir, topicID); got != "" {
+		t.Fatalf("lookup with only cleanup-pending sessions = %q, want empty", got)
+	}
+}
+
+func TestOpenProjectTabSkipsCleanupPendingTopicSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	app := NewApp()
+	topic, err := app.CreateTopic("project", projectRoot, "Pending topic")
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pending := writeTopicSessionWithPrompt(t, dir, "pending-topic.jsonl", topic.ID, "Pending topic", projectRoot, "pending topic prompt", time.Now())
+	if err := agent.MarkCleanupPending(pending, "delete"); err != nil {
+		t.Fatal(err)
+	}
+	if got := findTopicSession(dir, topic.ID); got != "" {
+		t.Fatalf("topic lookup with only cleanup-pending session = %q, want empty", got)
+	}
+	if got, _ := app.findTopicSessionForTarget("project", projectRoot, topic.ID); got != "" {
+		t.Fatalf("target topic lookup with only cleanup-pending session = %q, want empty", got)
+	}
+
+	meta, err := app.OpenProjectTab(projectRoot, topic.ID)
+	if err != nil {
+		t.Fatalf("open project tab: %v", err)
+	}
+	tab := waitForTabReady(t, app, meta.ID)
+	if got := filepath.Clean(tab.Ctrl.SessionPath()); got == filepath.Clean(pending) {
+		t.Fatalf("opened cleanup-pending topic session path %q", got)
+	}
+	for _, msg := range tab.Ctrl.History() {
+		if msg.Content == "pending topic prompt" {
+			t.Fatalf("opened cleanup-pending topic history at path %q: %+v", tab.Ctrl.SessionPath(), tab.Ctrl.History())
+		}
 	}
 }
 

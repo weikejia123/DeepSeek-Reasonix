@@ -111,9 +111,16 @@ func SanitizeToolPairing(msgs []Message) []Message {
 			for j < len(msgs) && msgs[j].Role == RoleTool {
 				j++
 			}
+			// Backfill empty tool-call names from the corresponding tool
+			// results so the model sees which tool was invoked (#4727).
+			// The wire-format fix (openai.go) ensures empty fields are
+			// never omitted, so this backfill is a UX improvement, not a
+			// correctness requirement.
+			calls := backfillToolCallNames(m.ToolCalls, msgs[i+1:j])
+			m.ToolCalls = calls
 			out = append(out, repairToolCallArgs(m))
-			out = append(out, pairToolResults(m.ToolCalls, msgs[i+1:j])...)
-			i = j // tool messages consumed here; any non-matching ones are orphans, dropped
+			out = append(out, pairToolResults(calls, msgs[i+1:j])...)
+			i = j
 			continue
 		}
 		if m.Role == RoleTool {
@@ -236,6 +243,50 @@ func pairToolResults(calls []ToolCall, avail []Message) []Message {
 			out = append(out, r)
 		} else {
 			out = append(out, Message{Role: RoleTool, ToolCallID: tc.ID, Name: tc.Name, Content: interruptedToolResult})
+		}
+	}
+	return out
+}
+
+// backfillToolCallNames returns calls with any empty Name filled in from the
+// matching tool result (by id, then by position). Old sessions (#4727) may have
+// saved assistant tool-calls with an empty name; backfilling gives the model
+// useful context during replay. The common case (no empty names) returns the
+// input unchanged without allocating. Unpaired calls keep their empty name,
+// which the wire-format fix (openai.go) handles gracefully.
+func backfillToolCallNames(calls []ToolCall, results []Message) []ToolCall {
+	missing := false
+	for _, c := range calls {
+		if c.Name == "" {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return calls
+	}
+	out := make([]ToolCall, len(calls))
+	copy(out, calls)
+	if idDistinct(calls) {
+		byID := make(map[string]string, len(results))
+		for _, r := range results {
+			if r.Name != "" {
+				byID[r.ToolCallID] = r.Name
+			}
+		}
+		for k := range out {
+			if out[k].Name == "" {
+				if n, ok := byID[out[k].ID]; ok {
+					out[k].Name = n
+				}
+			}
+		}
+		return out
+	}
+	// Fallback: positional pairing (same order as pairToolResults).
+	for k := range out {
+		if out[k].Name == "" && k < len(results) {
+			out[k].Name = results[k].Name
 		}
 	}
 	return out
@@ -430,16 +481,20 @@ type Config struct {
 // surface it verbatim instead of dumping a raw status body. Providers should
 // return this (rather than a generic status error) for auth failures.
 type AuthError struct {
-	Provider string // the provider instance name, e.g. "deepseek"
-	KeyEnv   string // the api_key_env the key is read from, when known
-	Status   int    // the HTTP status (401 or 403)
-	HasKey   bool   // a non-empty key was sent — the server rejected it, vs. no key configured at all
+	Provider  string // the provider instance name, e.g. "deepseek"
+	KeyEnv    string // the api_key_env the key is read from, when known
+	KeySource string // human-readable source of KeyEnv, when known
+	Status    int    // the HTTP status (401 or 403)
+	HasKey    bool   // a non-empty key was sent — the server rejected it, vs. no key configured at all
 }
 
 func (e *AuthError) Error() string {
 	key := "the API key"
 	if e.KeyEnv != "" {
 		key = e.KeyEnv
+	}
+	if e.KeySource != "" {
+		key += " from " + e.KeySource
 	}
 	return fmt.Sprintf("authentication failed for provider %q (HTTP %d): %s is invalid or expired — update it (in .env or your environment) and retry, or run `reasonix setup`",
 		e.Provider, e.Status, key)

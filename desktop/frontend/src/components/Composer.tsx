@@ -8,6 +8,7 @@ import { app, onFilesDropped } from "../lib/bridge";
 import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
+import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { useToast } from "../lib/toast";
 import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
@@ -24,6 +25,7 @@ import { ANCHORED_POPOVER_CLOSE_MS, AnchoredPopover } from "./AnchoredPopover";
 import { EffortSwitcher } from "./EffortSwitcher";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { Tooltip } from "./Tooltip";
+import { ComposerContextCard } from "./ComposerContextCard";
 
 interface Attachment {
   path: string;
@@ -138,10 +140,6 @@ function clipboardHasImageHint(data: DataTransfer): boolean {
 
 function isPasteShortcut(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
   return e.key.toLowerCase() === "v" && (e.metaKey || e.ctrlKey) && !e.altKey;
-}
-
-function isYoloToggleShortcut(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
-  return e.key.toLowerCase() === "y" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
 }
 
 async function dataURLHash(dataUrl: string): Promise<string> {
@@ -338,7 +336,6 @@ export function Composer({
   onSetCollaborationMode,
   onSetToolApprovalMode,
   onToggleYoloApprovalMode,
-  onSetGoal,
   onClearGoal,
   onSwitchModel,
   onSetEffort,
@@ -373,7 +370,6 @@ export function Composer({
   onSetCollaborationMode: (mode: CollaborationMode) => void;
   onSetToolApprovalMode: (mode: ToolApprovalMode) => void;
   onToggleYoloApprovalMode: () => void;
-  onSetGoal: (goal: string) => void;
   onClearGoal: () => void;
   onSwitchModel: (name: string) => void;
   onSetEffort: (level: string) => void;
@@ -396,6 +392,7 @@ export function Composer({
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const now = useTick(running);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -762,6 +759,16 @@ export function Composer({
     });
   };
 
+  const replaceComposerText = (next: string) => {
+    clearAttachments();
+    setWorkspaceRefs([]);
+    setSessionRefs([]);
+    pastedBlocksRef.current = [];
+    setPastedBlocks([]);
+    setOpenPastedLabels([]);
+    setTextCaretEnd(next);
+  };
+
   const addWorkspaceReference = (ref: WorkspaceReference) => {
     setWorkspaceRefs((prev) => {
       const key = workspaceReferenceKey(ref);
@@ -774,6 +781,10 @@ export function Composer({
   useEffect(() => {
     if (!insertRequest || insertRequest.id === consumedInsertIdRef.current) return;
     consumedInsertIdRef.current = insertRequest.id;
+    if (insertRequest.mode === "replace") {
+      replaceComposerText(insertRequest.text);
+      return;
+    }
     const ref = parseWorkspaceReference(insertRequest.text);
     if (ref) {
       addWorkspaceReference(ref);
@@ -1454,7 +1465,7 @@ export function Composer({
       return;
     }
 
-    if (isYoloToggleShortcut(e) && !composing) {
+    if (matchesShortcut(e.nativeEvent, "toolApproval.yolo", shortcutPlatform) && !composing) {
       e.preventDefault();
       onToggleYoloApprovalMode();
       return;
@@ -1560,7 +1571,7 @@ export function Composer({
     }
     // Esc interrupts the in-flight turn (matches the Stop button's hint), and
     // restores the text if the server hadn't replied yet.
-    if (e.key === "Escape" && running && !decisionPending) {
+    if (e.key === "Escape" && running) {
       e.preventDefault();
       handleCancel();
     }
@@ -1594,7 +1605,6 @@ export function Composer({
     ? ({ height: `${textareaAutoHeight}px`, overflowY: textareaAutoOverflow ? "auto" : "hidden" } as CSSProperties)
     : undefined;
   const composerAutoExpanded = composerHeight === null && textareaAutoHeight !== null && textareaAutoHeight > 40;
-  const draftGoal = text.trim();
   void onSetMode;
   const chooseApprovalMode = (nextMode: ToolApprovalMode) => {
     onSetToolApprovalMode(nextMode);
@@ -1610,14 +1620,6 @@ export function Composer({
     if (goalModeOn) {
       closeIntentMenu(() => {
         onClearGoal();
-        requestAnimationFrame(() => taRef.current?.focus());
-      });
-      return;
-    }
-    if (draftGoal) {
-      closeIntentMenu(() => {
-        onSetGoal(draftGoal);
-        setText("");
         requestAnimationFrame(() => taRef.current?.focus());
       });
       return;
@@ -1901,7 +1903,7 @@ export function Composer({
             <span className="composer-runstatus__dot" />
             <span className="composer-runstatus__text">{runActivity}</span>
             <Tooltip label={t("composer.stop")}>
-              <button className="composer-runstatus__stop" type="button" onClick={handleCancel} disabled={decisionPending}>
+              <button className="composer-runstatus__stop" type="button" onClick={handleCancel}>
                 <Square size={10} fill="currentColor" />
                 <span>{t("composer.stopShort")}</span>
               </button>
@@ -1914,62 +1916,29 @@ export function Composer({
           {sortComposerAttachments(attachments).map((a) => {
             const imageOnly = Boolean(a.previewUrl) && attachments.every((item) => item.previewUrl) && workspaceRefs.length === 0 && sessionRefs.length === 0;
             return (
-            <div
-              className={`composer-context__item${a.previewUrl ? " composer-context__item--image" : " composer-context__item--attachment"}${imageOnly ? " composer-context__item--image-only" : ""}`}
-              key={a.path}
-            >
-              <Tooltip label={a.path}>
-                <span className="composer-context__label">
-                  {a.previewUrl ? (
-                    <span className="composer-context__thumb">
-                      <img src={a.previewUrl} alt="" draggable={false} />
-                    </span>
-                  ) : (
-                    <>
-                      <span className="composer-context__fileicon">
-                        <FileText size={20} />
-                      </span>
-                      <span className="composer-context__main">
-                        <span className="composer-context__name">{attachmentName(a)}</span>
-                        <span className="composer-context__meta">{attachmentExt(attachmentName(a)) || t("msg.fileAttachment")}</span>
-                      </span>
-                    </>
-                  )}
-                </span>
-              </Tooltip>
-              <Tooltip label={t("composer.removeImage")} className="composer-context__remove-trigger">
-                <button
-                  className="composer-context__remove"
-                  type="button"
-                  onClick={() => removeAttachment(a.path)}
-                >
-                  <X size={14} />
-                </button>
-              </Tooltip>
-            </div>
+              <ComposerContextCard
+                key={a.path}
+                variant="attachment"
+                tooltipLabel={a.path}
+                removeLabel={t("composer.removeImage")}
+                onRemove={() => removeAttachment(a.path)}
+                previewUrl={a.previewUrl}
+                imageOnly={imageOnly}
+                name={attachmentName(a)}
+                meta={attachmentExt(attachmentName(a)) || t("msg.fileAttachment")}
+              />
             );
           })}
           {workspaceRefs.map((ref) => (
-            <div
-              className={`composer-context__item composer-context__item--workspace${ref.isDir ? " composer-context__item--folder" : " composer-context__item--file"}`}
+            <ComposerContextCard
               key={workspaceReferenceKey(ref)}
-            >
-              <Tooltip label={formatWorkspaceReference(ref.path, ref.isDir)}>
-                <span className="composer-context__label">
-                  {ref.isDir ? <Folder size={15} /> : <FileText size={15} />}
-                  <span>{ref.isDir ? `${baseName(ref.path)}/` : baseName(ref.path)}</span>
-                </span>
-              </Tooltip>
-              <Tooltip label={t("composer.removeReference")} className="composer-context__remove-trigger">
-                <button
-                  className="composer-context__remove"
-                  type="button"
-                  onClick={() => removeWorkspaceReference(ref)}
-                >
-                  <X size={13} />
-                </button>
-              </Tooltip>
-            </div>
+              variant="workspace"
+              tooltipLabel={formatWorkspaceReference(ref.path, ref.isDir)}
+              removeLabel={t("composer.removeReference")}
+              onRemove={() => removeWorkspaceReference(ref)}
+              folder={Boolean(ref.isDir)}
+              label={ref.isDir ? `${baseName(ref.path)}/` : baseName(ref.path)}
+            />
           ))}
           {sessionRefs.map((ref) => (
             <div
@@ -2052,8 +2021,10 @@ export function Composer({
         >
           <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
           <textarea
+            id="composer-input"
             ref={taRef}
             className="composer__input"
+            aria-label={t("composer.placeholder")}
             value={text}
             onChange={(e) => {
               resetPromptHistoryNavigation();

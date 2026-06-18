@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 )
 
@@ -378,6 +379,76 @@ func TestResumeRequiresSessionPathInsideSessionDir(t *testing.T) {
 	}
 }
 
+func TestResumeRejectsCleanupPendingSession(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "active.jsonl")
+	pending := filepath.Join(dir, "pending.jsonl")
+	for _, path := range []string{active, pending} {
+		if err := os.WriteFile(path, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.MarkCleanupPending(pending, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
+	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	defer srv.Close()
+
+	body, err := json.Marshal(map[string]string{"path": pending})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/resume", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("cleanup-pending resume status = %d, want 400", resp.StatusCode)
+	}
+	if got := filepath.Clean(ctrl.SessionPath()); got != filepath.Clean(active) {
+		t.Fatalf("session path after rejected resume = %q, want active %q", got, active)
+	}
+}
+
+func TestSessionsSkipsCleanupPending(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "active.jsonl")
+	pending := filepath.Join(dir, "pending.jsonl")
+	for _, path := range []string{active, pending} {
+		if err := os.WriteFile(path, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.MarkCleanupPending(pending, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
+	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got []struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "active" || filepath.Clean(got[0].Path) != filepath.Clean(active) {
+		t.Fatalf("/sessions = %+v, want only active session", got)
+	}
+}
+
 func TestDeleteSessionRequiresSessionNameInsideSessionDir(t *testing.T) {
 	dir := t.TempDir()
 	active := filepath.Join(dir, "active.jsonl")
@@ -389,6 +460,13 @@ func TestDeleteSessionRequiresSessionNameInsideSessionDir(t *testing.T) {
 	}
 	ref := "sa_20260102_030405_000000000_aabbccddeeff"
 	writeServeSubagentArtifact(t, dir, ref, agent.BranchID(old))
+	oldJobsDir := jobs.ArtifactDir(old)
+	if err := os.MkdirAll(oldJobsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldJobsDir, "bash-1.log"), []byte("output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	sibling := dir + "-other"
 	if err := os.MkdirAll(sibling, 0o755); err != nil {
 		t.Fatal(err)
@@ -434,6 +512,9 @@ func TestDeleteSessionRequiresSessionNameInsideSessionDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "subagents", ref+".meta.json")); !os.IsNotExist(err) {
 		t.Fatalf("old session subagent meta still exists or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(oldJobsDir); !os.IsNotExist(err) {
+		t.Fatalf("old session jobs sidecar still exists or stat failed unexpectedly: %v", err)
 	}
 }
 

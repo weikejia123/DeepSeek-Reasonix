@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,9 +13,11 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/command"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
+	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 )
 
@@ -40,6 +43,23 @@ type fakeFactory struct {
 func (f *fakeFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
 	runner := &fakeRunner{sink: p.Sink, behavior: f.behavior}
 	return control.New(control.Options{Runner: runner, Sink: p.Sink}), nil
+}
+
+type commandFactory struct {
+	commands []command.Command
+	seen     chan string
+}
+
+func (f *commandFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
+	runner := &fakeRunner{
+		sink: p.Sink,
+		behavior: func(_ context.Context, sink event.Sink, input string) error {
+			f.seen <- input
+			sink.Emit(event.Event{Kind: event.Text, Text: input})
+			return nil
+		},
+	}
+	return control.New(control.Options{Runner: runner, Sink: p.Sink, Commands: f.commands}), nil
 }
 
 type configurableFactory struct {
@@ -78,6 +98,42 @@ func (f *configurableFactory) NewSession(_ context.Context, p SessionParams) (*c
 }
 
 func (f *configurableFactory) SessionDir() string { return f.dir }
+
+type teardownFactory struct {
+	dir     string
+	grace   time.Duration
+	mu      sync.Mutex
+	manager *jobs.Manager
+}
+
+func (f *teardownFactory) SessionDir() string { return f.dir }
+
+func (f *teardownFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
+	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(f.grace))
+	f.mu.Lock()
+	f.manager = jm
+	f.mu.Unlock()
+	runner := &fakeRunner{
+		sink:     p.Sink,
+		behavior: func(context.Context, event.Sink, string) error { return nil },
+	}
+	return control.New(control.Options{
+		Runner:     runner,
+		Sink:       p.Sink,
+		SessionDir: f.dir,
+		Jobs:       jm,
+	}), nil
+}
+
+func (f *teardownFactory) lastManager(t *testing.T) *jobs.Manager {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.manager == nil {
+		t.Fatal("session manager was not created")
+	}
+	return f.manager
+}
 
 func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
 	model := strings.TrimSpace(p.Model)
@@ -333,6 +389,21 @@ func TestServeLifecycle(t *testing.T) {
 	if ir.AgentCapabilities.PromptCapabilities.Image {
 		t.Errorf("image must not be advertised")
 	}
+	if len(ir.AuthMethods) != 1 || ir.AuthMethods[0].ID != "reasonix-setup" || ir.AuthMethods[0].Type != "terminal" {
+		t.Fatalf("authMethods = %+v, want terminal reasonix setup", ir.AuthMethods)
+	}
+	if len(ir.AuthMethods[0].Args) != 1 || ir.AuthMethods[0].Args[0] != "setup" {
+		t.Fatalf("auth args = %+v, want [setup]", ir.AuthMethods[0].Args)
+	}
+
+	authResp := client.call(t, "authenticate", AuthenticateParams{MethodID: "reasonix-setup"})
+	if authResp.Error != nil {
+		t.Fatalf("authenticate errored: %+v", authResp.Error)
+	}
+	badAuthResp := client.call(t, "authenticate", AuthenticateParams{MethodID: "missing"})
+	if badAuthResp.Error == nil || badAuthResp.Error.Code != ErrInvalidParams {
+		t.Fatalf("bad authenticate = %+v, want invalid params", badAuthResp.Error)
+	}
 
 	newResp := client.call(t, "session/new", SessionNewParams{Cwd: t.TempDir()})
 	var nr SessionNewResult
@@ -361,6 +432,72 @@ func TestServeLifecycle(t *testing.T) {
 	}
 	if pr.StopReason != StopEndTurn {
 		t.Errorf("stopReason = %q, want %q", pr.StopReason, StopEndTurn)
+	}
+}
+
+func TestServeAdvertisesAndExpandsCustomCommands(t *testing.T) {
+	factory := &commandFactory{
+		seen: make(chan string, 1),
+		commands: []command.Command{{
+			Name:        "review",
+			Description: "Review the target",
+			ArgHint:     "path",
+			Body:        "Review $1",
+		}},
+	}
+	client, stop := startServer(t, factory)
+	defer stop()
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	newResp := client.call(t, "session/new", SessionNewParams{Cwd: t.TempDir()})
+	var nr SessionNewResult
+	if err := json.Unmarshal(newResp.Result, &nr); err != nil || nr.SessionID == "" {
+		t.Fatalf("session/new result: %v (%q)", err, nr.SessionID)
+	}
+
+	var advertised bool
+	select {
+	case n := <-client.notifs:
+		var p struct {
+			Update struct {
+				SessionUpdate     string             `json:"sessionUpdate"`
+				AvailableCommands []AvailableCommand `json:"availableCommands"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			t.Fatalf("available commands update: %v", err)
+		}
+		for _, cmd := range p.Update.AvailableCommands {
+			if p.Update.SessionUpdate == "available_commands_update" &&
+				cmd.Name == "review" &&
+				cmd.Description == "Review the target" &&
+				cmd.Input != nil &&
+				cmd.Input.Hint == "path" {
+				advertised = true
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for available_commands_update")
+	}
+	if !advertised {
+		t.Fatal("review command was not advertised")
+	}
+
+	promptCh := client.callAsync("session/prompt", SessionPromptParams{
+		SessionID: nr.SessionID,
+		Prompt:    []ContentBlock{{Type: "text", Text: "/review src/main.go"}},
+	})
+	_, resp := drainPrompt(t, client, promptCh)
+	if resp.Error != nil {
+		t.Fatalf("prompt errored: %+v", resp.Error)
+	}
+	select {
+	case got := <-factory.seen:
+		if got != "Review src/main.go" {
+			t.Fatalf("runner input = %q, want expanded command", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not receive prompt")
 	}
 }
 
@@ -596,6 +733,45 @@ func TestServeSessionLoadFallsBackFromStaleSavedModel(t *testing.T) {
 	}
 }
 
+func TestServeSessionLoadRejectsCleanupPending(t *testing.T) {
+	dir := t.TempDir()
+	cwd := t.TempDir()
+	sessionID := "pending-load"
+	path := transcriptPath(dir, sessionID)
+	saved := agent.NewSession("")
+	saved.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	if err := saved.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveACPMeta(path, acpSessionMeta{
+		SessionID: sessionID,
+		Cwd:       cwd,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.MarkCleanupPending(path, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	factory := &configurableFactory{dir: dir}
+	client, stop := startServer(t, factory)
+	defer stop()
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	loadResp := client.call(t, "session/load", SessionLoadParams{SessionID: sessionID, Cwd: cwd})
+	if loadResp.Error == nil || !strings.Contains(loadResp.Error.Message, "unknown session") {
+		t.Fatalf("session/load cleanup-pending error = %+v, want unknown session", loadResp.Error)
+	}
+	factory.mu.Lock()
+	builds := append([]SessionParams(nil), factory.builds...)
+	factory.mu.Unlock()
+	if len(builds) != 0 {
+		t.Fatalf("cleanup-pending load should not build a controller, got builds %+v", builds)
+	}
+}
+
 func TestServeCancel(t *testing.T) {
 	started := make(chan struct{})
 	factory := &fakeFactory{behavior: func(ctx context.Context, _ event.Sink, _ string) error {
@@ -632,6 +808,32 @@ func TestServeCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancel did not end the prompt")
+	}
+}
+
+func TestServePromptErrorIsNotReportedAsCancelled(t *testing.T) {
+	factory := &fakeFactory{behavior: func(context.Context, event.Sink, string) error {
+		return errors.New("provider failed")
+	}}
+	client, stop := startServer(t, factory)
+	defer stop()
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	newResp := client.call(t, "session/new", SessionNewParams{})
+	var nr SessionNewResult
+	json.Unmarshal(newResp.Result, &nr)
+
+	promptCh := client.callAsync("session/prompt", SessionPromptParams{
+		SessionID: nr.SessionID,
+		Prompt:    []ContentBlock{{Type: "text", Text: "fail"}},
+	})
+	_, resp := drainPrompt(t, client, promptCh)
+	var pr SessionPromptResult
+	if err := json.Unmarshal(resp.Result, &pr); err != nil {
+		t.Fatalf("prompt result: %v", err)
+	}
+	if pr.StopReason != StopError {
+		t.Errorf("stopReason = %q, want error", pr.StopReason)
 	}
 }
 
@@ -708,6 +910,52 @@ func TestServeSessionClose(t *testing.T) {
 	}
 }
 
+func TestSessionDeleteWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
+	dir := t.TempDir()
+	grace := 500 * time.Millisecond
+	slack := 300 * time.Millisecond
+	factory := &teardownFactory{dir: dir, grace: grace}
+	client, stop := startServer(t, factory)
+	defer stop()
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	newResp := client.call(t, "session/new", SessionNewParams{Cwd: t.TempDir()})
+	var nr SessionNewResult
+	if err := json.Unmarshal(newResp.Result, &nr); err != nil || nr.SessionID == "" {
+		t.Fatalf("session/new: %v (%q)", err, nr.SessionID)
+	}
+	path := transcriptPath(dir, nr.SessionID)
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	releaseJob := startNonCooperativeACPJob(t, factory.lastManager(t), path)
+	defer releaseJob()
+
+	start := time.Now()
+	resp := client.call(t, "session/delete", SessionDeleteParams{SessionID: nr.SessionID})
+	elapsed := time.Since(start)
+	if resp.Error != nil {
+		t.Fatalf("session/delete errored: %+v", resp.Error)
+	}
+	if elapsed > grace+slack {
+		t.Fatalf("session/delete took %s, want one teardown grace plus scheduling slack", elapsed)
+	}
+	if !agent.IsCleanupPending(path) {
+		t.Fatalf("stuck ACP delete should mark cleanup pending")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stuck ACP transcript should remain until delayed cleanup: %v", err)
+	}
+	releaseJob()
+	deadline := time.Now().Add(2 * time.Second)
+	for agent.IsCleanupPending(path) {
+		if time.Now().After(deadline) {
+			t.Fatalf("cleanup-pending marker was not cleared after stuck job release")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestServeRejectsPathLikeSessionID(t *testing.T) {
 	factory := &fakeFactory{behavior: func(context.Context, event.Sink, string) error { return nil }}
 	client, stop := startServer(t, factory)
@@ -722,6 +970,38 @@ func TestServeRejectsPathLikeSessionID(t *testing.T) {
 	}
 }
 
+func TestListACPMetasSkipsCleanupPending(t *testing.T) {
+	dir := t.TempDir()
+	visibleID := "visible"
+	pendingID := "pending"
+	for _, id := range []string{visibleID, pendingID} {
+		path := transcriptPath(dir, id)
+		if err := os.WriteFile(path, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveACPMeta(path, acpSessionMeta{
+			SessionID: id,
+			Cwd:       t.TempDir(),
+			Title:     id,
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.MarkCleanupPending(transcriptPath(dir, pendingID), "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	metas, err := listACPMetas(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].SessionID != visibleID {
+		t.Fatalf("listACPMetas = %+v, want only %q", metas, visibleID)
+	}
+}
+
 func TestDeleteSessionFilesDeletesOwnedSubagents(t *testing.T) {
 	dir := t.TempDir()
 	sessionPath := filepath.Join(dir, "session.jsonl")
@@ -730,6 +1010,13 @@ func TestDeleteSessionFilesDeletesOwnedSubagents(t *testing.T) {
 	}
 	ref := "sa_20260102_030405_000000000_aabbccddeeff"
 	writeACPSubagentArtifact(t, dir, ref, agent.BranchID(sessionPath))
+	jobsDir := jobs.ArtifactDir(sessionPath)
+	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobsDir, "bash-1.log"), []byte("output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := deleteSessionFiles(sessionPath); err != nil {
 		t.Fatalf("deleteSessionFiles: %v", err)
@@ -739,6 +1026,39 @@ func TestDeleteSessionFilesDeletesOwnedSubagents(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "subagents", ref+".meta.json")); !os.IsNotExist(err) {
 		t.Fatalf("subagent meta should be deleted, stat err = %v", err)
+	}
+	if _, err := os.Stat(jobsDir); !os.IsNotExist(err) {
+		t.Fatalf("jobs sidecar should be deleted, stat err = %v", err)
+	}
+}
+
+func TestReconcileCleanupPendingDeletesACPMeta(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := transcriptPath(dir, "pending-acp")
+	if err := os.WriteFile(sessionPath, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveACPMeta(sessionPath, acpSessionMeta{Cwd: t.TempDir(), Model: "test-model"}); err != nil {
+		t.Fatal(err)
+	}
+	jobsDir := jobs.ArtifactDir(sessionPath)
+	if err := os.MkdirAll(jobsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobsDir, "bash-1.log"), []byte("output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.MarkCleanupPending(sessionPath, "delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileCleanupPending(dir); err != nil {
+		t.Fatalf("ReconcileCleanupPending: %v", err)
+	}
+	for _, path := range []string{sessionPath, acpMetaPath(sessionPath), jobsDir, agent.CleanupPendingPath(sessionPath)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after reconciliation (err=%v)", path, err)
+		}
 	}
 }
 
@@ -763,6 +1083,31 @@ func writeACPSubagentArtifact(t *testing.T, dir, ref, parentSession string) {
 	}
 	if err := os.WriteFile(filepath.Join(subagentDir, ref+".meta.json"), data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func startNonCooperativeACPJob(t *testing.T, jm *jobs.Manager, sessionPath string) func() {
+	t.Helper()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	jm.StartForSession(agent.BranchID(sessionPath), "bash", "stuck job", func(ctx context.Context, _ io.Writer) (string, error) {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return "", ctx.Err()
+	})
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background job never started")
+	}
+	released := false
+	return func() {
+		if released {
+			return
+		}
+		released = true
+		close(release)
 	}
 }
 

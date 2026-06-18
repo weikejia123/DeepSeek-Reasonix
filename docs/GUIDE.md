@@ -12,6 +12,7 @@
 ## Contents
 
 - [Configuration](#configuration)
+- [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Permissions & sandbox](#permissions--sandbox)
@@ -23,10 +24,15 @@
 ## Configuration
 
 Resolution order: **flag > `./reasonix.toml` > the user config file >
-built-in defaults**. The user config lives in your OS config dir: `~/.config/reasonix/`
-on Linux, `~/Library/Application Support/reasonix/` on macOS, `%AppData%\reasonix\` on
-Windows. Secrets come from the environment via `api_key_env` and are
-never stored in config files.
+built-in defaults**. Starting with **Reasonix v1.8.1**, the user config lives at
+`~/.reasonix/config.toml` on macOS/Linux and
+`%AppData%\reasonix\config.toml` on Windows; see
+[Configuration paths](./CONFIG_PATHS.md) for migration and related data paths.
+Secrets come from the environment via `api_key_env` and are never stored in
+config files. Credentials default to `credentials_store = "auto"`, which prefers
+the OS credential store and falls back to the file under Reasonix home. New keys
+saved by Reasonix are not written to a project `.env`; project `.env` files are
+only read for compatibility and explicit per-project overrides.
 
 For the desktop and CLI usage of visible reasoning language, see
 [Reasoning language](./REASONING_LANGUAGE.md).
@@ -93,14 +99,22 @@ behavior below is unified across layouts.
 
 ### Desktop GUI
 
+Desktop shortcuts are managed from **Settings → Shortcuts**. Pick a row, press a
+new key combination, and Reasonix saves it for the desktop app. Conflicting
+bindings are rejected so one shortcut never triggers two actions. Press `?` or
+use the help button in the topic bar to open the shortcuts sheet; it is generated
+from the same shortcut registry, so it reflects any custom bindings.
+
 Global shortcuts:
 
 | Key or control | What it does | Notes |
 | --- | --- | --- |
 | `Cmd+K` on macOS, `Ctrl+K` on Windows/Linux | Opens the command palette | `Esc` closes the palette. |
+| `Cmd+,` on macOS, `Ctrl+,` on Windows/Linux | Opens Settings | Use **Shortcuts** in Settings to customize desktop bindings. |
 | `Cmd+W` on macOS, `Ctrl+W` on Windows/Linux | Closes the active top tab | The last tab is kept by the normal close-tab guard. |
 | `Cmd+B` / `Ctrl+B` | Expands or collapses the most recent shell output | Same action as clicking the collapsed shell-output hint. |
 | `Cmd++`, `Cmd+-`, `Cmd+0` on macOS; `Ctrl++`, `Ctrl+-`, `Ctrl+0` elsewhere | Increases, decreases, or resets text size | `=` is accepted for the plus key on keyboards that report it that way. |
+| `?` | Opens the keyboard shortcuts sheet | The sheet shows the current effective desktop bindings. |
 
 Composer shortcuts:
 
@@ -122,6 +136,8 @@ Menus and controls:
 | `Enter` / `Tab` in those menus | Accepts the highlighted item | Directory-like entries can keep the menu open for the next level. |
 | `Esc` in those menus | Closes the current menu or returns from past-chat search | Regular typing continues after the menu closes. |
 | Ask / Auto / YOLO approval controls | Picks the tool approval posture directly | Clicking these controls is unchanged by keyboard shortcuts. |
+| Tool approval card | `Left` / `Right`, `Enter`, `1`-`4`, `Esc` | Move the highlighted action, confirm it, pick a numbered action, or deny. The default highlighted action is Allow once. |
+| Plan approval card | `Left` / `Right`, `Enter`, `1`-`3`, `Esc` | Move between Revise plan, Start execution, and Exit plan. The default highlighted action is Start execution. |
 | Plan control | Toggles Plan on/off | Same mode as `Shift+Tab`. |
 | Goal item in the collaboration menu | Starts, views, or clears Goal | Goal is not in any keyboard cycle. |
 
@@ -154,7 +170,7 @@ Mode and display shortcuts:
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Same action as clicking the collapsed shell-output hint. |
 | Ask / Auto | No keyboard cycle | Ask is the default interactive base. Auto is not entered through `Shift+Tab`; use clients or APIs that expose the tool approval posture directly. |
-| `/goal <objective>`, `/goal status`, `/goal clear` | Starts, checks, or clears Goal | Goal is not in any keyboard cycle. |
+| `/goal <objective>`, `/goal --research <objective>`, `/goal --simple <objective>`, `/goal status`, `/goal clear` | Starts, checks, or clears Goal | Goal is not in any keyboard cycle; clearly long-horizon goals automatically enable AutoResearch. Ordinary prompts with strong AutoResearch signals are also upgraded into Goal. |
 
 Picker and approval shortcuts:
 
@@ -185,7 +201,7 @@ Permissions gate each tool call: `deny` > `ask` > `allow` > fallback. Bash and
 file mutation tools require approval by default; read-only tools generally do
 not. Approvals are stored and matched as permission rules, not button labels:
 for example `Bash(npm run build)`, `Bash(npm run test:*)`, and `Edit(docs/**)`.
-`reasonix chat` can grant Bash as an exact command or as a conservative command
+`reasonix` can grant Bash as an exact command or as a conservative command
 prefix (for example `Bash(go test:*)`), while file-editing tools share session
 edit grants and persist path-scoped rules such as `Edit(src/app.go)`.
 `reasonix run` stays autonomous but still honours `deny`.
@@ -256,9 +272,9 @@ convenient.
 
 ## Slash commands
 
-In `reasonix chat`, built-in commands (`/compact`, `/new`, `/clear`, `/rewind`,
+In an interactive `reasonix` session, built-in commands (`/compact`, `/new`, `/clear`, `/rewind`,
 `/tree`, `/branch`, `/switch`, `/todo`, `/model`, `/mcp`, `/skills`, `/hooks`,
-`/memory`, `/output-style`, `/sandbox`, `/language`, `/auto-plan`,
+`/memory`, `/goal`, `/output-style`, `/sandbox`, `/language`, `/auto-plan`,
 `/reasoning-language`, `/help`) run
 locally — `/help` lists them all. `/new` starts a new session while saving the
 previous transcript for history/resume; `/clear` asks for confirmation, then
@@ -266,7 +282,7 @@ discards the current context without saving it. `/tree` shows saved conversation
 branches, `/branch [name]` forks the current conversation tip, `/branch <turn>
 [name]` forks from an earlier checkpointed turn, and `/switch <id|name>` loads
 another branch. **Custom commands** are Markdown files under `.reasonix/commands/`
-(project) or `~/.config/reasonix/commands/` (user) — `review.md` becomes
+(project) or `~/.reasonix/commands/` (user) — `review.md` becomes
 `/review`, a subdirectory namespaces it (`git/commit.md` → `/git:commit`). The
 body is a prompt template; invoking the command sends it as a turn.
 
@@ -294,6 +310,52 @@ Review the staged diff. Focus on $ARGUMENTS, list bugs with file:line.
 
 `$ARGUMENTS` expands to all space-separated args, `$1`…`$N` to positional ones.
 MCP prompts also appear here as `/mcp__<server>__<prompt>`.
+
+## Goal and AutoResearch
+
+Goal is the unified runtime for long-running objectives. Ordinary `/goal`
+objectives stay lightweight: Reasonix keeps working until the goal is complete,
+blocked, or cleared. When a goal is clearly long-horizon, Goal automatically
+enables the AutoResearch strategy instead of requiring a separate
+`/auto-research` skill; `auto-research` is not listed as a standalone built-in
+skill in Settings -> Skills or the slash menu. If an ordinary chat prompt has a
+very strong long-horizon signal, the host also upgrades it into the equivalent
+of `/goal --research <original prompt>`.
+
+AutoResearch is enabled for goals with strong signals such as "keep
+researching", "long-running", "thoroughly", "debug until the root cause is
+clear", "do not spin", "run experiments", "verify repeatedly", or "turn this
+into a complete plan". It can also trigger when the objective combines multiple
+phases such as research/diagnosis, implementation/fixing, verification/testing,
+optimization/documentation/release, or when the user names an existing
+`.reasonix/autoresearch/<task-id>/` directory. Advanced users can force it with
+`/goal --research <objective>` or force lightweight Goal with
+`/goal --simple <objective>`. Ordinary-chat auto-upgrade is more conservative
+than `/goal`'s internal classification: standalone phrases such as "long term",
+"optimize", "research this", or "verify this" do not create AutoResearch tasks
+by themselves.
+
+Once AutoResearch is active, the agent treats the goal as a stateful research
+loop instead of a chat-only continuation. It creates or reuses a project-local
+`.reasonix/autoresearch/<task-id>/` directory. For new tasks, the default id
+shape is `YYYYMMDD-HHMMSS-slug`, such as `20260618-224530-cache-audit`; Reasonix
+checks the project directory first and appends `-2`, `-3`, and so on only if
+that id already exists. The task state includes `task_spec.md`, `progress.json`,
+`findings.jsonl`, `directions_tried.json`, and `iteration_log.jsonl`, records
+each iteration's direction, evidence, verification result, and blocker, and uses
+`stale_count` to detect repeated weak progress. Repeated stalls force a
+structural pivot, such as changing evidence source, entrypoint, test oracle,
+decomposition, benchmark, or worker strategy, rather than retrying the same
+tactic.
+
+Workers and subagents may explore independently, but the orchestrator owns the
+canonical state files. Completion requires a requirement-by-requirement evidence
+audit against `task_spec.md`; a passing narrow check is not treated as proof of a
+broad requirement. Dynamic run state stays in `.reasonix/autoresearch/...`, not
+in `REASONIX.md`, `AGENTS.md`, project memory, tool schemas, or the cache-stable
+system prompt. Public publishing, destructive operations, credentials, payments,
+and external notifications still follow the normal approval, privacy, and cache
+gates.
 
 ## @ references
 
@@ -338,9 +400,9 @@ automatically: Reasonix first drafts a read-only plan, then waits for approval
 before editing or running side-effecting commands. `auto_plan_classifier` can
 name a cheap provider such as `deepseek-flash`; it is only called for borderline
 inputs and falls back to the heuristic if classification fails. Use
-`/auto-plan off|on` in `reasonix chat` to change the user-level setting, or
+`/auto-plan off|on` inside `reasonix` to change the user-level setting, or
 `reasonix config auto-plan off|on` from a shell/script. The visible reasoning
-language uses the same shape: `/reasoning-language auto|zh|en` in chat, or
+language uses the same shape: `/reasoning-language auto|zh|en` in the session, or
 `reasonix config reasoning-language auto|zh|en` in a shell/script. Pass
 `--local` to the shell command only when you intentionally want a project-local
 override.
