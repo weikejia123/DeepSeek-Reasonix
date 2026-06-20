@@ -111,6 +111,15 @@ func sendToTabByTitle(app *App, sourceTabID, targetTabName, message string) erro
 			return fmt.Errorf("tab %q has no event sink", targetTabName)
 		}
 
+		// Check the controller is idle before sending. Without this guard the
+		// UserMessage event is emitted (creating a frontend bubble) but
+		// SubmitDisplay → runGuarded silently ignores the turn when the
+		// controller is busy — the user sees a "ghost" bubble with no model
+		// response.
+		if tab.Ctrl.Running() {
+			return fmt.Errorf("tab %q is currently busy; try again later", targetTabName)
+		}
+
 		// Emit UserMessage so the frontend renders a user bubble immediately,
 		// then submit the raw message as a turn so the model responds.
 		tab.sink.Emit(event.Event{Kind: event.UserMessage, Text: displayText})
@@ -121,8 +130,12 @@ func sendToTabByTitle(app *App, sourceTabID, targetTabName, message string) erro
 }
 
 // sourceTabTitle returns the title of the source tab, or a fallback label if
-// the tab cannot be found.
+// the tab cannot be found. An empty tabID indicates an external API call
+// (dkre API), labelled "dkre-api" so the prefix is descriptive.
 func sourceTabTitle(app *App, tabID string) string {
+	if tabID == "" {
+		return "dkre-api"
+	}
 	if tab := app.tabByID(tabID); tab != nil && strings.TrimSpace(tab.TopicTitle) != "" {
 		return tab.TopicTitle
 	}

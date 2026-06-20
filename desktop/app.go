@@ -133,6 +133,8 @@ type App struct {
 	skillRootsCache skillRootsCache
 
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
+
+	dkreAPI *dkreAPI // local HTTP API (127.0.0.1); nil until startup
 }
 
 type skillRootsCache struct {
@@ -345,6 +347,9 @@ func (a *App) startup(ctx context.Context) {
 	a.heartbeat = newHeartbeatEngine(a)
 	a.heartbeat.Start()
 
+	a.dkreAPI = newDkreAPI(a)
+	a.dkreAPI.start(ctx)
+
 	go a.restoreOrBuildTabs()
 	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
 	a.goSafe("sendStartupPing", a.sendStartupPing)
@@ -546,11 +551,14 @@ func (a *App) snapshotAllTabs() {
 }
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
-func (a *App) shutdown(context.Context) {
+func (a *App) shutdown(ctx context.Context) {
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
 	}
 	a.stopBotRuntime()
+	if a.dkreAPI != nil {
+		a.dkreAPI.stop()
+	}
 	a.stopTray()
 	// Save window geometry synchronously from Go so it's persisted even if the
 	// frontend's beforeunload promise hasn't resolved yet.
