@@ -3919,8 +3919,51 @@ func (c *Controller) emitRememberResult(r RememberResult) {
 
 // --- aloop ---
 
-const aloopInterval = 15 * time.Second
+const aloopDefaultIntervalSec = 30 // Default interval in seconds, used as the initial value for auto-time.cfg.
+const aloopMinIntervalSec = 30     // Minimum interval: config values below this are clamped.
 const aloopScriptTimeout = 10 * time.Second
+
+// aloopConfigPath returns the path to the auto-time interval config file.
+func aloopConfigPath(projectRoot string) string {
+	return filepath.Join(projectRoot, ".aloop", "cfg", "auto-time.cfg")
+}
+
+// readLoopInterval reads the loop interval (in seconds) from auto-time.cfg.
+// If the file is missing, it is created containing the default value.
+// The returned interval is always at least aloopMinIntervalSec seconds.
+// Errors are logged and cause a safe fallback — the loop continues.
+func readLoopInterval(projectRoot string) time.Duration {
+	cfgPath := aloopConfigPath(projectRoot)
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("aloop: read auto-time.cfg", "err", err)
+			return aloopDefaultIntervalSec * time.Second
+		}
+		// File doesn't exist — create it with the default value.
+		cfgDir := filepath.Dir(cfgPath)
+		if mkErr := os.MkdirAll(cfgDir, 0755); mkErr != nil {
+			slog.Warn("aloop: create cfg dir", "err", mkErr)
+			return aloopDefaultIntervalSec * time.Second
+		}
+		content := strconv.Itoa(aloopDefaultIntervalSec)
+		if wErr := os.WriteFile(cfgPath, []byte(content), 0644); wErr != nil {
+			slog.Warn("aloop: write auto-time.cfg", "err", wErr)
+			return aloopDefaultIntervalSec * time.Second
+		}
+		return aloopDefaultIntervalSec * time.Second
+	}
+	val := strings.TrimSpace(string(data))
+	sec, err := strconv.Atoi(val)
+	if err != nil || sec <= 0 {
+		slog.Warn("aloop: invalid auto-time.cfg value (must be positive integer)", "value", val)
+		return aloopDefaultIntervalSec * time.Second
+	}
+	if sec < aloopMinIntervalSec {
+		sec = aloopMinIntervalSec
+	}
+	return time.Duration(sec) * time.Second
+}
 
 // StartLoop begins executing .aloop/main.sh under projectRoot every 30 seconds.
 // When the script writes non-empty stdout, the text is sent as a normal turn.
@@ -3955,7 +3998,7 @@ echo "!echo 我正在测试 A-Loop 脚本，你收到这条消息后，不用思
 	c.loopRoot = projectRoot
 	c.mu.Unlock()
 
-	go c.loopRun(ctx, scriptPath)
+	go c.loopRun(ctx, scriptPath, projectRoot)
 	return nil
 }
 
@@ -3979,7 +4022,7 @@ func (c *Controller) LoopActive() bool {
 	return c.loopActive
 }
 
-func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
+func (c *Controller) loopRun(ctx context.Context, scriptPath string, projectRoot string) {
 	defer func() {
 		c.mu.Lock()
 		c.loopActive = false
@@ -3988,16 +4031,20 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 	}()
 	for {
 		// Wait for any ongoing turn to complete before starting the interval.
-		// This ensures the 15s interval starts from turn completion.
+		// This ensures the interval starts from turn completion.
 		if !c.waitForTurnDone(ctx) {
 			return // Context cancelled
 		}
+
+		// Read the next interval from auto-time.cfg (or use default if missing).
+		// Read on every tick so the user can hot-edit the file.
+		interval := readLoopInterval(projectRoot)
 
 		// Wait for the interval or cancellation.
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(aloopInterval):
+		case <-time.After(interval):
 		}
 
 		// Double-check no turn is running (race protection).
@@ -4022,7 +4069,8 @@ func (c *Controller) loopRun(ctx context.Context, scriptPath string) {
 		c.SubmitDisplay(displayText, text)
 
 		// Loop continues: next iteration will wait for turn completion,
-		// then wait 15s, then execute script again.
+		// then read auto-time.cfg again, wait the configured interval,
+		// then execute script again.
 	}
 }
 
