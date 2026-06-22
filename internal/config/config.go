@@ -1,5 +1,6 @@
 // Package config loads Reasonix's runtime configuration from TOML. Resolution order:
 // flag > project ./reasonix.toml > user config.toml (in the OS user-config dir) > built-in defaults.
+// User-global runtime controls, such as agent step limits, are documented exceptions.
 // Secrets come from the environment via api_key_env and are never stored in
 // config files.
 package config
@@ -17,6 +18,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"reasonix/internal/fileutil"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 )
@@ -85,7 +87,7 @@ type UIConfig struct {
 // language, terminal colours, or provider-visible prompt/request data.
 type DesktopConfig struct {
 	Language       string   `toml:"language"`         // auto|en|zh; empty/auto = browser/OS auto-detect
-	LayoutStyle    string   `toml:"layout_style"`     // classic|workbench; desktop layout style
+	LayoutStyle    string   `toml:"layout_style"`     // classic|workbench|creation; desktop layout style
 	Theme          string   `toml:"theme"`            // auto|dark|light; empty resolves to auto
 	ThemeStyle     string   `toml:"theme_style"`      // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
 	CloseBehavior  string   `toml:"close_behavior"`   // quit|background; desktop window close behavior
@@ -152,6 +154,8 @@ func normalizeDesktopLayoutStyle(style string) string {
 		return "classic"
 	case "workbench", "workspace":
 		return "workbench"
+	case "creation":
+		return "creation"
 	default:
 		return "workbench"
 	}
@@ -1058,16 +1062,16 @@ type PluginEntry struct {
 	// AutoStart controls whether the server connects during session startup.
 	// Nil preserves historical behavior: configured servers start automatically.
 	AutoStart *bool `toml:"auto_start"`
-	// Tier selects how aggressively the server is connected at boot:
+	// Tier is a legacy compatibility field. New config rendering omits it; enabled
+	// MCP servers connect automatically in the background unless auto_start=false.
+	// Historical values are accepted for old files:
 	//   "eager"      — blocks startup until the handshake completes; required for
 	//                  servers whose tools the system prompt depends on.
-	//   "lazy"       — registers placeholder tools immediately (from on-disk
-	//                  schema cache when available) and only spawns the real
-	//                  subprocess on first model use. Kept for legacy configs.
+	//   "lazy"       — legacy alias for background.
 	//   "background" — placeholder + spawn fired at boot but not waited on;
 	//                  swap happens once the spawn finishes.
 	// Empty defaults to "background" so enabled MCPs connect automatically
-	// without blocking chat. Unknown non-empty values fall back to "lazy".
+	// without blocking chat. Unknown non-empty values fall back to "background".
 	Tier string `toml:"tier"`
 }
 
@@ -1075,9 +1079,9 @@ func (e PluginEntry) ShouldAutoStart() bool {
 	return e.AutoStart == nil || *e.AutoStart
 }
 
-// ResolvedTier returns the normalized tier ("eager"|"lazy"|"background") with
-// the project default applied. Unknown values fall back to "lazy" so a typo
-// never forces a slow boot.
+// ResolvedTier returns the normalized tier ("eager"|"background") with the
+// project default applied. Legacy lazy and unknown values fall back to
+// background so enabled MCPs are available without manual connection.
 func (e PluginEntry) ResolvedTier() string {
 	return resolvedMCPTier(e.Tier)
 }
@@ -1086,12 +1090,12 @@ func resolvedMCPTier(tier string) string {
 	switch strings.ToLower(strings.TrimSpace(tier)) {
 	case "eager":
 		return "eager"
-	case "background":
+	case "background", "lazy":
 		return "background"
 	case "":
 		return "background"
 	default:
-		return "lazy"
+		return "background"
 	}
 }
 
@@ -1132,7 +1136,7 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 	`whenever they switch. Let this also guide the language you think in. Always keep code, ` +
 	`identifiers, file paths, shell commands, and technical terms in their original form — never translate them.`
 
-// Default returns the built-in default configuration (DeepSeek + MiMo presets).
+// Default returns the built-in default configuration.
 func Default() *Config {
 	return &Config{
 		ConfigVersion:    3,
@@ -1152,7 +1156,7 @@ func Default() *Config {
 			// compaction, not by a round count. Set a positive agent.max_steps only
 			// if you want a hard guard against runaway.
 			MaxSteps:          0,
-			PlannerMaxSteps:   12,
+			PlannerMaxSteps:   0,
 			AutoPlan:          "off",
 			SoftCompactRatio:  0.5,
 			CompactRatio:      0.8,
@@ -1183,8 +1187,6 @@ func Default() *Config {
 		Providers: []ProviderEntry{
 			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPrice()},
 			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4ProPrice()},
-			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25ProPrice(), NoProxy: true},
-			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25Price(), NoProxy: true},
 		},
 	}
 }
@@ -1300,25 +1302,7 @@ func mimoDomesticPrices(models []string) map[string]*provider.Pricing {
 	return prices
 }
 
-func backfillMimoDomesticPrices(e *ProviderEntry) {
-	if e == nil {
-		return
-	}
-	defaults := mimoDomesticPrices(e.ModelList())
-	if len(defaults) == 0 {
-		return
-	}
-	if e.Prices == nil {
-		e.Prices = map[string]*provider.Pricing{}
-	}
-	for model, price := range defaults {
-		if e.Prices[model] == nil {
-			e.Prices[model] = clonePricing(price)
-		}
-	}
-}
-
-// ResetOfficialProviderPricingOnUpgrade resets official DeepSeek/MiMo prices to
+// ResetOfficialProviderPricingOnUpgrade resets official DeepSeek prices to
 // the current built-in RMB defaults once for desktop upgrades. It intentionally
 // runs from the desktop app startup path, not every config Load(), so user edits
 // made after the upgrade are preserved.
@@ -1358,8 +1342,6 @@ func resetOfficialProviderPricingDefaults(c *Config) {
 		switch {
 		case officialProviderKind(p) == "deepseek":
 			resetDeepSeekOfficialPricing(p)
-		case isOfficialMimoAPIProvider(p), isOfficialMimoTokenPlanProvider(p):
-			resetMimoOfficialPricing(p)
 		}
 	}
 }
@@ -1384,28 +1366,6 @@ func resetDeepSeekOfficialPricing(p *ProviderEntry) {
 		if p.HasModel(model) {
 			p.Prices[model] = clonePricing(price)
 		}
-	}
-}
-
-func resetMimoOfficialPricing(p *ProviderEntry) {
-	if p == nil {
-		return
-	}
-	defaults := mimoDomesticPrices(p.ModelList())
-	if len(defaults) == 0 {
-		return
-	}
-	p.Price = nil
-	if strings.TrimSpace(p.Model) != "" && len(p.Models) == 0 {
-		if price := defaults[strings.TrimSpace(p.Model)]; price != nil {
-			p.Price = clonePricing(price)
-			p.Prices = nil
-			return
-		}
-	}
-	p.Prices = map[string]*provider.Pricing{}
-	for model, price := range defaults {
-		p.Prices[model] = clonePricing(price)
 	}
 }
 
@@ -1456,18 +1416,22 @@ func LoadForRoot(root string) (*Config, error) {
 	var tomlSources []string
 	if uc := userConfigLoadPath(); uc != "" {
 		tomlSources = append(tomlSources, uc)
-	}
-	tomlSources = append(tomlSources, projectTOML)
-	for _, path := range tomlSources {
-		if _, err := os.Stat(path); err == nil {
-			if err := migrateLegacyMCPTiersFile(path); err != nil {
-				slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
-			}
-		}
-		if err := mergeFile(cfg, path); err != nil {
+		if err := mergeRuntimeTOMLFile(cfg, uc); err != nil {
 			return nil, err
 		}
 	}
+	globalMaxSteps := cfg.Agent.MaxSteps
+	globalPlannerMaxSteps := cfg.Agent.PlannerMaxSteps
+
+	tomlSources = append(tomlSources, projectTOML)
+	if err := mergeRuntimeTOMLFile(cfg, projectTOML); err != nil {
+		return nil, err
+	}
+	// Runtime step caps are user/global controls, not project policy. Keep the
+	// project config's other fields, but do not let ./reasonix.toml override
+	// the user's execution and planner round limits.
+	cfg.Agent.MaxSteps = globalMaxSteps
+	cfg.Agent.PlannerMaxSteps = globalPlannerMaxSteps
 	// toml.DecodeFile replaces [[plugins]] wholesale, so cfg.Plugins now holds
 	// only the last file's. Re-merge by name across all sources (later wins) so a
 	// project reasonix.toml doesn't drop the global config's MCP servers.
@@ -1509,6 +1473,7 @@ func LoadForRoot(root string) (*Config, error) {
 	normalizePluginCommandLines(cfg)
 	normalizeLegacyEffort(cfg)
 	normalizeLegacyMCPTiers(cfg)
+	normalizeLegacyMimoCustomProviders(cfg)
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	normalizeOfficialDeepSeekModels(cfg)
@@ -1516,8 +1481,22 @@ func LoadForRoot(root string) (*Config, error) {
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
 	backfillDeepSeekPro(cfg)
+	cfg.Agent.AutoPlan = userAutoPlanMode()
 	cfg.CredentialsStore = credentialsStoreMode()
 	return cfg, nil
+}
+
+func userAutoPlanMode() string {
+	cfg := Default()
+	if uc := userConfigLoadPath(); uc != "" {
+		_ = mergeFile(cfg, uc)
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Agent.AutoPlan)) {
+	case "on", "ask":
+		return "on"
+	default:
+		return "off"
+	}
 }
 
 // backfillDeepSeekPro restores deepseek-pro for configs the pre-fix setup wizard
@@ -1774,19 +1753,28 @@ func loadForEditStrict(path string, loadCredentials bool) (*Config, error) {
 	if err := mergeFile(cfg, path); err != nil {
 		return nil, err
 	}
-	normalizeConfigForEdit(cfg)
+	migratedMimo := normalizeConfigForEdit(cfg)
+	if migratedMimo && strings.TrimSpace(path) != "" {
+		if _, err := os.Stat(path); err == nil {
+			if err := cfg.SaveTo(path); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return cfg, nil
 }
 
-func normalizeConfigForEdit(cfg *Config) {
+func normalizeConfigForEdit(cfg *Config) bool {
 	normalizePluginCommandLines(cfg)
 	normalizeLegacyEffort(cfg)
 	normalizeLegacyMCPTiers(cfg)
+	migratedMimo := normalizeLegacyMimoCustomProviders(cfg)
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
+	return migratedMimo
 }
 
 func loadDotEnvForEditPath(path string) {
@@ -1807,6 +1795,15 @@ func mergeFile(cfg *Config, path string) error {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
 	return nil
+}
+
+func mergeRuntimeTOMLFile(cfg *Config, path string) error {
+	if _, err := os.Stat(path); err == nil {
+		if err := migrateLegacyMCPTiersFile(path); err != nil {
+			slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
+		}
+	}
+	return mergeFile(cfg, path)
 }
 
 // normalizeLegacyMCPTiers keeps loaded legacy config files on the new product
@@ -1900,6 +1897,83 @@ func normalizeLegacyProviderModels(c *Config) {
 	}
 }
 
+func normalizeLegacyMimoProviderCatalogs(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	changed := false
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if legacyMimoProviderName(p.Name) == "" || len(p.Models) > 0 {
+			continue
+		}
+		switch officialProviderHost(p.BaseURL) {
+		case "api.xiaomimimo.com":
+			if applyLegacyMimoCatalog(p, legacyMimoAPIModels(), []string{"mimo-v2.5", "mimo-v2-omni"}, "mimo-v2.5-pro") {
+				changed = true
+			}
+		case "token-plan-cn.xiaomimimo.com":
+			if applyLegacyMimoCatalog(p, legacyMimoTokenPlanModels(), []string{"mimo-v2.5"}, "mimo-v2.5-pro") {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func applyLegacyMimoCatalog(p *ProviderEntry, models, visionModels []string, fallbackDefault string) bool {
+	if p == nil || len(models) == 0 {
+		return false
+	}
+	beforeModels := append([]string(nil), p.Models...)
+	beforeVision := append([]string(nil), p.VisionModels...)
+	beforeDefault := p.Default
+	beforeModel := p.Model
+	beforeWindow := p.ContextWindow
+	beforeNoProxy := p.NoProxy
+	beforePricesLen := len(p.Prices)
+
+	currentDefault := strings.TrimSpace(p.Default)
+	if currentDefault == "" {
+		currentDefault = strings.TrimSpace(p.Model)
+	}
+	p.Models = mergeModelLists(models, p.ModelList())
+	p.Model = p.Models[0]
+	p.Default = firstKnownModel(currentDefault, p.Models, fallbackDefault)
+	p.VisionModels = mergeModelLists(visionModels, p.VisionModels)
+	backfillOfficialContextWindow(p, 1_048_576)
+	p.NoProxy = true
+	if p.Prices == nil {
+		p.Prices = mimoDomesticPrices(models)
+	} else {
+		for model, price := range mimoDomesticPrices(models) {
+			if p.Prices[model] == nil {
+				p.Prices[model] = price
+			}
+		}
+	}
+
+	return !stringSlicesEqual(beforeModels, p.Models) ||
+		!stringSlicesEqual(beforeVision, p.VisionModels) ||
+		beforeDefault != p.Default ||
+		beforeModel != p.Model ||
+		beforeWindow != p.ContextWindow ||
+		beforeNoProxy != p.NoProxy ||
+		beforePricesLen != len(p.Prices)
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeOfficialDeepSeekModels(c *Config) {
 	if c == nil {
 		return
@@ -1957,12 +2031,149 @@ func legacyOfficialProviderModel(name string) string {
 		return "deepseek-v4-flash"
 	case "deepseek-pro":
 		return "deepseek-v4-pro"
-	case "mimo-api", "mimo-pro":
+	case "mimo", "xiaomi-mimo", "xiaomi_mimo", "mimo-api", "mimo-token-plan", "mimo-pro":
 		return "mimo-v2.5-pro"
 	case "mimo-flash":
 		return "mimo-v2.5"
 	default:
 		return ""
+	}
+}
+
+func normalizeLegacyMimoCustomProviders(c *Config) bool {
+	return normalizeLegacyMimoCustomProvidersForRefs(c, legacyMimoConfigRefs(c)...)
+}
+
+// NormalizeLegacyMimoCustomProvidersForRefs appends custom OpenAI-compatible
+// MiMo providers needed by legacy refs that live outside reasonix.toml, such as
+// restored desktop tab state.
+func NormalizeLegacyMimoCustomProvidersForRefs(c *Config, refs ...string) bool {
+	return normalizeLegacyMimoCustomProvidersForRefs(c, refs...)
+}
+
+func normalizeLegacyMimoCustomProvidersForRefs(c *Config, refs ...string) bool {
+	if c == nil {
+		return false
+	}
+	needed := map[string]bool{}
+	addRef := func(ref string) {
+		if name := legacyMimoProviderNameForRef(ref); name != "" {
+			needed[name] = true
+		}
+	}
+	for _, ref := range refs {
+		addRef(ref)
+	}
+	changed := normalizeLegacyMimoProviderCatalogs(c)
+	for name := range needed {
+		if _, ok := c.Provider(name); ok {
+			continue
+		}
+		c.Providers = append(c.Providers, legacyMimoCustomProvider(name))
+		changed = true
+	}
+	if normalizeLegacyMimoProviderCatalogs(c) {
+		changed = true
+	}
+	return changed
+}
+
+func legacyMimoConfigRefs(c *Config) []string {
+	if c == nil {
+		return nil
+	}
+	refs := []string{
+		c.DefaultModel,
+		c.Agent.PlannerModel,
+		c.Agent.SubagentModel,
+		c.Agent.AutoPlanClassifier,
+		c.Bot.Model,
+	}
+	for _, ref := range c.Agent.SubagentModels {
+		refs = append(refs, ref)
+	}
+	for _, conn := range c.Bot.Connections {
+		refs = append(refs, conn.Model)
+	}
+	refs = append(refs, c.Desktop.ProviderAccess...)
+	return refs
+}
+
+func legacyMimoProviderName(ref string) string {
+	switch strings.TrimSpace(ref) {
+	case "mimo", "xiaomi-mimo", "xiaomi_mimo", "mimo-api", "mimo-token-plan", "mimo-pro", "mimo-flash":
+		return strings.TrimSpace(ref)
+	default:
+		return ""
+	}
+}
+
+func legacyMimoProviderNameForRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	providerName, _, hasModel := strings.Cut(ref, "/")
+	if name := legacyMimoProviderName(providerName); name != "" {
+		return name
+	}
+	if hasModel {
+		return ""
+	}
+	switch ref {
+	case "mimo-v2.5-pro":
+		return "mimo-pro"
+	case "mimo-v2.5":
+		return "mimo-flash"
+	case "mimo-v2-omni":
+		return "mimo-api"
+	default:
+		return ""
+	}
+}
+
+func legacyMimoAPIModels() []string {
+	return []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"}
+}
+
+func legacyMimoTokenPlanModels() []string {
+	return []string{"mimo-v2.5-pro", "mimo-v2.5"}
+}
+
+func legacyMimoCustomProvider(name string) ProviderEntry {
+	switch strings.TrimSpace(name) {
+	case "mimo", "xiaomi-mimo", "xiaomi_mimo", "mimo-api":
+		models := legacyMimoAPIModels()
+		return ProviderEntry{
+			Name:          strings.TrimSpace(name),
+			Kind:          "openai",
+			BaseURL:       "https://api.xiaomimimo.com/v1",
+			Models:        models,
+			VisionModels:  []string{"mimo-v2.5", "mimo-v2-omni"},
+			Default:       "mimo-v2.5-pro",
+			APIKeyEnv:     "MIMO_API_KEY",
+			ContextWindow: 1_048_576,
+			Prices:        mimoDomesticPrices(models),
+			NoProxy:       true,
+		}
+	case "mimo-token-plan":
+		models := legacyMimoTokenPlanModels()
+		return ProviderEntry{
+			Name:          "mimo-token-plan",
+			Kind:          "openai",
+			BaseURL:       "https://token-plan-cn.xiaomimimo.com/v1",
+			Models:        models,
+			VisionModels:  []string{"mimo-v2.5"},
+			Default:       "mimo-v2.5-pro",
+			APIKeyEnv:     "MIMO_API_KEY",
+			ContextWindow: 1_048_576,
+			Prices:        mimoDomesticPrices(models),
+			NoProxy:       true,
+		}
+	case "mimo-flash":
+		return ProviderEntry{Name: "mimo-flash", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25Price(), NoProxy: true}
+	default:
+		return ProviderEntry{Name: "mimo-pro", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25ProPrice(), NoProxy: true}
 	}
 }
 
@@ -1972,11 +2183,7 @@ func normalizeDesktopOfficialProviderAccess(c *Config) {
 	}
 	seen := desktopProviderAccessMap(nil)
 	next := make([]string, 0, len(c.Desktop.ProviderAccess))
-	includeMimoFlash := false
 	for _, name := range c.Desktop.ProviderAccess {
-		if strings.TrimSpace(name) == "mimo-flash" {
-			includeMimoFlash = true
-		}
 		name = desktopProviderAccessNameForConfig(c, name)
 		if name == "" || seen[name] {
 			continue
@@ -1988,12 +2195,7 @@ func normalizeDesktopOfficialProviderAccess(c *Config) {
 	if seen["deepseek"] {
 		ensureDeepSeekOfficialProvider(c)
 	}
-	if seen["mimo-api"] {
-		ensureMimoAPIProvider(c)
-	}
-	if seen["mimo-token-plan"] {
-		ensureMimoTokenPlanProvider(c, includeMimoFlash)
-	}
+	normalizeLegacyMimoProviderCatalogs(c)
 	retargetDesktopOfficialRefs(c, seen)
 }
 
@@ -2030,8 +2232,16 @@ func NormalizeLegacyDesktopProviderAccess(c *Config) {
 	for _, ref := range c.Agent.SubagentModels {
 		addRef(ref)
 	}
+	addRef(c.Bot.Model)
+	for _, conn := range c.Bot.Connections {
+		addRef(conn.Model)
+	}
 	for i := range c.Providers {
 		p := &c.Providers[i]
+		if legacyMimoProviderName(p.Name) != "" && len(p.ModelList()) > 0 {
+			add(p.Name)
+			continue
+		}
 		if p.Configured() && len(p.ModelList()) > 0 {
 			add(p.Name)
 		}
@@ -2047,10 +2257,6 @@ func canonicalDesktopOfficialProviderName(name string) string {
 	switch strings.TrimSpace(name) {
 	case "deepseek-flash", "deepseek-pro":
 		return "deepseek"
-	case "mimo", "xiaomi-mimo", "xiaomi_mimo":
-		return "mimo-api"
-	case "mimo-pro", "mimo-flash":
-		return "mimo-token-plan"
 	default:
 		return strings.TrimSpace(name)
 	}
@@ -2081,10 +2287,6 @@ func providerEntryMatchesCanonicalOfficialAccess(p *ProviderEntry, canonical str
 	switch canonical {
 	case "deepseek":
 		return officialProviderKind(p) == "deepseek"
-	case "mimo-api":
-		return isOfficialMimoAPIProvider(p)
-	case "mimo-token-plan":
-		return isOfficialMimoTokenPlanProvider(p)
 	default:
 		return false
 	}
@@ -2135,83 +2337,6 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 	c.Providers = append(c.Providers, entry)
 }
 
-func ensureMimoAPIProvider(c *Config) {
-	models := []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"}
-	visionModels := []string{"mimo-v2.5", "mimo-v2-omni"}
-	if p, ok := c.Provider("mimo-api"); ok {
-		if isOfficialMimoAPIProvider(p) {
-			backfillOfficialContextWindow(p, 1_048_576)
-			mergeCuratedModelsIntoProvider(p, models, "mimo-v2.5-pro")
-			mergeVisionModelsIntoProvider(p, visionModels)
-			backfillMimoDomesticPrices(p)
-		}
-		return
-	}
-	c.Providers = append(c.Providers, ProviderEntry{
-		Name:          "mimo-api",
-		Kind:          "openai",
-		BaseURL:       "https://api.xiaomimimo.com/v1",
-		Models:        models,
-		VisionModels:  visionModels,
-		Default:       "mimo-v2.5-pro",
-		APIKeyEnv:     "MIMO_API_KEY",
-		ContextWindow: 1_048_576,
-		Prices:        mimoDomesticPrices(models),
-		NoProxy:       true,
-	})
-}
-
-func ensureMimoTokenPlanProvider(c *Config, includeMimoFlash bool) {
-	models := []string{"mimo-v2.5-pro", "mimo-v2.5"}
-	visionModels := []string{"mimo-v2.5"}
-	if p, ok := c.Provider("mimo-token-plan"); ok {
-		if isOfficialMimoTokenPlanProvider(p) {
-			backfillOfficialContextWindow(p, 1_048_576)
-			mergeCuratedModelsIntoProvider(p, models, "mimo-v2.5-pro")
-			mergeVisionModelsIntoProvider(p, visionModels)
-			clearMixedMimoTokenPlanPrice(p)
-			backfillMimoDomesticPrices(p)
-		}
-		return
-	}
-	entry := ProviderEntry{
-		Name:          "mimo-token-plan",
-		Kind:          "openai",
-		BaseURL:       "https://token-plan-cn.xiaomimimo.com/v1",
-		Models:        models,
-		VisionModels:  visionModels,
-		Default:       "mimo-v2.5-pro",
-		APIKeyEnv:     "MIMO_API_KEY",
-		ContextWindow: 1_048_576,
-		Prices:        mimoDomesticPrices(models),
-		NoProxy:       true,
-	}
-	if old, ok := c.Provider("mimo-pro"); ok {
-		entry = officialProviderFromLegacy(entry, old)
-		entry.Models = mergeModelLists(models, old.ModelList())
-		entry.Default = firstKnownModel(entry.Default, entry.Models, "mimo-v2.5-pro")
-	}
-	if old, ok := c.Provider("mimo-flash"); includeMimoFlash && ok {
-		if !providerHasAnyModel(entry) {
-			entry = officialProviderFromLegacy(entry, old)
-		}
-		entry.Models = mergeModelLists(entry.Models, old.ModelList())
-		entry.Default = firstKnownModel(entry.Default, entry.Models, entry.Default)
-	}
-	clearMixedMimoTokenPlanPrice(&entry)
-	backfillMimoDomesticPrices(&entry)
-	backfillOfficialContextWindow(&entry, 1_048_576)
-	c.Providers = append(c.Providers, entry)
-}
-
-func isOfficialMimoAPIProvider(e *ProviderEntry) bool {
-	return isOpenAIProviderKind(e) && officialMimoHost(e.BaseURL) == "api.xiaomimimo.com"
-}
-
-func isOfficialMimoTokenPlanProvider(e *ProviderEntry) bool {
-	return isOpenAIProviderKind(e) && officialMimoHost(e.BaseURL) == "token-plan-cn.xiaomimimo.com"
-}
-
 func isOpenAIProviderKind(e *ProviderEntry) bool {
 	return e != nil && strings.EqualFold(strings.TrimSpace(e.Kind), "openai")
 }
@@ -2228,33 +2353,6 @@ func mergeCuratedModelsIntoProvider(e *ProviderEntry, models []string, fallback 
 	}
 	e.Models = mergeModelLists(models, e.ModelList())
 	e.Default = firstKnownModel(currentDefault, e.Models, fallback)
-}
-
-func mergeVisionModelsIntoProvider(e *ProviderEntry, models []string) {
-	if e == nil {
-		return
-	}
-	enabled := map[string]bool{}
-	for _, model := range e.ChatModelList() {
-		enabled[model] = true
-	}
-	merged := e.VisionModels
-	if merged == nil {
-		merged = models
-	}
-	out := make([]string, 0, len(merged))
-	for _, model := range merged {
-		if enabled[model] && IsLikelyChatModel(model) {
-			out = append(out, model)
-		}
-	}
-	e.VisionModels = out
-}
-
-func clearMixedMimoTokenPlanPrice(e *ProviderEntry) {
-	if e != nil && e.HasModel("mimo-v2.5-pro") && e.HasModel("mimo-v2.5") {
-		e.Price = nil
-	}
 }
 
 func backfillOfficialContextWindow(e *ProviderEntry, fallback int) {
@@ -2347,30 +2445,6 @@ func retargetDesktopOfficialRef(ref string, access map[string]bool) string {
 			model = "deepseek-v4-pro"
 		}
 		return "deepseek/" + model
-	case "mimo-pro":
-		if !access["mimo-token-plan"] {
-			return ref
-		}
-		if !hasModel || strings.TrimSpace(model) == "" {
-			model = "mimo-v2.5-pro"
-		}
-		return "mimo-token-plan/" + model
-	case "mimo", "xiaomi-mimo", "xiaomi_mimo":
-		if !access["mimo-api"] {
-			return ref
-		}
-		if !hasModel || strings.TrimSpace(model) == "" {
-			model = "mimo-v2.5-pro"
-		}
-		return "mimo-api/" + model
-	case "mimo-flash":
-		if !access["mimo-token-plan"] {
-			return ref
-		}
-		if !hasModel || strings.TrimSpace(model) == "" {
-			model = "mimo-v2.5"
-		}
-		return "mimo-token-plan/" + model
 	default:
 		return ref
 	}
@@ -2781,9 +2855,12 @@ func SourcePathForRoot(root string) string {
 	return ""
 }
 
-// WriteFile writes the configuration to path as annotated TOML.
+// WriteFile writes the configuration to path as annotated TOML. The write is
+// atomic + fsynced so an interrupted write or power loss can never truncate the
+// main config into an unparseable state that leaves the app with no usable
+// models (#4615, #4708).
 func (c *Config) WriteFile(path string) error {
-	return os.WriteFile(path, []byte(RenderTOMLForScope(c, renderScopeForPath(path))), 0o644)
+	return fileutil.AtomicWriteFile(path, []byte(RenderTOMLForScope(c, renderScopeForPath(path))), configFilePerm(path))
 }
 
 // Provider returns the named provider entry.

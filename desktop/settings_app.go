@@ -237,14 +237,6 @@ func officialProviderKindFromEntry(p config.ProviderEntry) string {
 		if host == "api.deepseek.com" {
 			return "deepseek"
 		}
-	case "mimo-api":
-		if host == "api.xiaomimimo.com" {
-			return "mimo-api"
-		}
-	case "mimo-token-plan":
-		if host == "token-plan-cn.xiaomimimo.com" {
-			return "mimo-token-plan"
-		}
 	}
 	return ""
 }
@@ -340,7 +332,7 @@ func officialProviderViewsForRootWithResolver(added map[string]bool, pricingLang
 	if resolver == nil {
 		resolver = config.NewCredentialResolverForRoot(root)
 	}
-	for _, kind := range []string{"deepseek", "mimo-api", "mimo-token-plan"} {
+	for _, kind := range []string{"deepseek"} {
 		entries, _, err := officialProviderTemplate(kind, pricingLanguage)
 		if err != nil {
 			continue
@@ -422,7 +414,7 @@ func (a *App) Settings() SettingsView {
 				Deny:  []string{},
 			},
 			Sandbox:            SandboxView{Bash: "enforce", AllowWrite: []string{}, Shell: "auto"},
-			Agent:              AgentView{PlannerMaxSteps: 12, ColdResumePrune: true, ReasoningLanguage: "auto"},
+			Agent:              AgentView{PlannerMaxSteps: 0, ColdResumePrune: true, ReasoningLanguage: "auto"},
 			Bot:                botSettingsView(config.BotConfig{}),
 			AutoPlan:           "off",
 			DesktopLayoutStyle: "workbench",
@@ -641,7 +633,9 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	}
 	if _, err := os.Stat(userPath); err == nil {
 		cfg := config.LoadForEdit(userPath)
-		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
+			return nil, "", err
+		}
 		if err := a.migrateLegacyBotConfigToUser(cfg, userPath); err != nil {
 			return nil, "", err
 		}
@@ -650,11 +644,15 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	cfg := config.LoadForEdit(userPath)
 	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
-		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
+			return nil, "", err
+		}
 		return cfg, userPath, nil
 	}
 	legacyCfg := config.LoadForEdit(legacyPath)
-	normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath)
+	if err := normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath); err != nil {
+		return nil, "", err
+	}
 	legacyCfg.ConfigVersion = config.Default().ConfigVersion
 	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
 		return nil, "", err
@@ -669,7 +667,9 @@ func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
 	}
 	if _, err := os.Stat(userPath); err == nil {
 		cfg := config.LoadForEditWithoutCredentials(userPath)
-		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
+			return nil, "", err
+		}
 		legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
 		if legacyPath != "" && !sameConfigPath(legacyPath, userPath) {
 			legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
@@ -682,11 +682,15 @@ func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
 	cfg := config.LoadForEditWithoutCredentials(userPath)
 	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
-		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
+			return nil, "", err
+		}
 		return cfg, userPath, nil
 	}
 	legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
-	normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath)
+	if err := normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath); err != nil {
+		return nil, "", err
+	}
 	legacyCfg.ConfigVersion = config.Default().ConfigVersion
 	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
 		return nil, "", err
@@ -755,11 +759,21 @@ func desktopBotConfigConfigured(bot config.BotConfig) bool {
 	return false
 }
 
-func normalizeLegacyDesktopProviderAccessForSettings(cfg *config.Config, path string) {
+func normalizeLegacyDesktopProviderAccessForSettings(cfg *config.Config, path string) error {
 	if cfg == nil || len(cfg.Desktop.ProviderAccess) > 0 || configDeclaresProviderAccess(path) {
-		return
+		return nil
 	}
 	config.NormalizeLegacyDesktopProviderAccess(cfg)
+	if len(cfg.Desktop.ProviderAccess) == 0 || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return cfg.SaveTo(path)
 }
 
 func configDeclaresProviderAccess(path string) bool {
@@ -1037,7 +1051,24 @@ func (a *App) SetSubagentEffort(level string) error {
 
 // SetAutoPlan updates the automatic plan-mode gate (off|on).
 func (a *App) SetAutoPlan(mode string) error {
-	return a.applyConfigChange(func(c *config.Config) error { return c.SetAutoPlan(mode) })
+	if err := a.ensureLiveControllersRuntimeMutationAllowed("auto-plan"); err != nil {
+		return err
+	}
+	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	if err := cfg.SetAutoPlan(mode); err != nil {
+		return err
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		return err
+	}
+	a.applyAutoPlanToLiveControllers(cfg.Agent.AutoPlan)
+	if desktopAutoPlanMode(cfg.Agent.AutoPlan) == "on" && strings.TrimSpace(cfg.Agent.AutoPlanClassifier) != "" {
+		return a.rebuild()
+	}
+	return nil
 }
 
 func desktopAutoPlanMode(mode string) string {
@@ -1046,6 +1077,28 @@ func desktopAutoPlanMode(mode string) string {
 		return "on"
 	default:
 		return "off"
+	}
+}
+
+func (a *App) applyAutoPlanToLiveControllers(fallback string) {
+	type liveTab struct {
+		root string
+		ctrl control.SessionAPI
+	}
+	var tabs []liveTab
+	a.mu.RLock()
+	for _, tab := range a.tabs {
+		if tab != nil && tab.Ctrl != nil {
+			tabs = append(tabs, liveTab{root: tab.WorkspaceRoot, ctrl: tab.Ctrl})
+		}
+	}
+	a.mu.RUnlock()
+	for _, tab := range tabs {
+		mode := fallback
+		if cfg, err := config.LoadForRoot(tab.root); err == nil {
+			mode = cfg.Agent.AutoPlan
+		}
+		tab.ctrl.SetAutoPlan(mode)
 	}
 }
 
@@ -1063,41 +1116,6 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			ContextWindow: 1_000_000,
 			Prices:        config.DeepSeekV4PricesForLanguage(pricingLanguage),
 		}}, "DEEPSEEK_API_KEY", nil
-	case "mimo-api", "xiaomi-mimo", "xiaomi_mimo":
-		models := []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"}
-		return []config.ProviderEntry{{
-			Name:          "mimo-api",
-			Kind:          "openai",
-			BaseURL:       "https://api.xiaomimimo.com/v1",
-			Models:        models,
-			VisionModels:  []string{"mimo-v2.5", "mimo-v2-omni"},
-			Default:       "mimo-v2.5-pro",
-			APIKeyEnv:     "MIMO_API_KEY",
-			ContextWindow: 1_048_576,
-			Prices: map[string]*provider.Pricing{
-				"mimo-v2.5-pro": &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"},
-				"mimo-v2.5":     &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"},
-				"mimo-v2-omni":  &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"},
-			},
-			NoProxy: true,
-		}}, "MIMO_API_KEY", nil
-	case "mimo-token-plan", "xiaomi-mimo-token-plan", "xiaomi_mimo_token_plan":
-		models := []string{"mimo-v2.5-pro", "mimo-v2.5"}
-		return []config.ProviderEntry{{
-			Name:          "mimo-token-plan",
-			Kind:          "openai",
-			BaseURL:       "https://token-plan-cn.xiaomimimo.com/v1",
-			Models:        models,
-			VisionModels:  []string{"mimo-v2.5"},
-			Default:       "mimo-v2.5-pro",
-			APIKeyEnv:     "MIMO_API_KEY",
-			ContextWindow: 1_048_576,
-			Prices: map[string]*provider.Pricing{
-				"mimo-v2.5-pro": &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"},
-				"mimo-v2.5":     &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"},
-			},
-			NoProxy: true,
-		}}, "MIMO_API_KEY", nil
 	default:
 		return nil, "", fmt.Errorf("unknown official provider template %q", kind)
 	}
@@ -1280,7 +1298,7 @@ func (a *App) RemoveProviderAccess(name string) error {
 
 type providerRemovalTab struct {
 	id       string
-	ctrl     *control.Controller
+	ctrl     control.SessionAPI
 	readOnly bool
 }
 
@@ -1839,7 +1857,7 @@ func (a *App) SetReasoningLanguage(lang string) error {
 func (a *App) applyReasoningLanguageToLiveControllers(fallback string) {
 	type liveTab struct {
 		root string
-		ctrl *control.Controller
+		ctrl control.SessionAPI
 	}
 	var tabs []liveTab
 	a.mu.RLock()

@@ -116,6 +116,111 @@ func writeLegacyEventSession(t *testing.T, dir, name, prompt, reply string, modT
 	return path
 }
 
+func TestSessionListCacheRefillsAfterInvalidate(t *testing.T) {
+	cache := &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	dir := t.TempDir()
+	first := []agent.SessionInfo{{Path: filepath.Join(dir, "first.jsonl")}}
+	second := []agent.SessionInfo{{Path: filepath.Join(dir, "second.jsonl")}}
+
+	token := cache.versionToken()
+	cache.put(dir, first, map[string]string{"first.jsonl": "First"}, token)
+	if infos, titles, ok := cache.get(dir); !ok || len(infos) != 1 || filepath.Base(infos[0].Path) != "first.jsonl" || titles["first.jsonl"] != "First" {
+		t.Fatalf("initial cache entry = %+v, %+v, %v", infos, titles, ok)
+	}
+
+	cache.invalidate()
+	if _, _, ok := cache.get(dir); ok {
+		t.Fatalf("cache entry survived invalidate")
+	}
+	cache.put(dir, first, map[string]string{"first.jsonl": "stale"}, token)
+	if _, _, ok := cache.get(dir); ok {
+		t.Fatalf("stale token repopulated cache after invalidate")
+	}
+
+	token = cache.versionToken()
+	cache.put(dir, second, map[string]string{"second.jsonl": "Second"}, token)
+	if infos, titles, ok := cache.get(dir); !ok || len(infos) != 1 || filepath.Base(infos[0].Path) != "second.jsonl" || titles["second.jsonl"] != "Second" {
+		t.Fatalf("refilled cache entry = %+v, %+v, %v", infos, titles, ok)
+	}
+}
+
+func TestRenameSessionInvalidatesProjectTreeCache(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	oldProjectCache := projectSessionCache
+	projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
+	t.Cleanup(func() {
+		projectSessionCache = oldProjectCache
+	})
+
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "rename-me.jsonl")
+	if err := os.WriteFile(sessionPath, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: sessionPath, Label: "test"})
+	defer ctrl.Close()
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+
+	token := projectSessionCache.versionToken()
+	projectSessionCache.put(dir, []agent.SessionInfo{{Path: sessionPath}}, map[string]string{"rename-me.jsonl": "old"}, token)
+	if _, _, ok := projectSessionCache.get(dir); !ok {
+		t.Fatalf("expected primed project tree cache")
+	}
+	if err := app.RenameSession(sessionPath, "new title"); err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+	if _, _, ok := projectSessionCache.get(dir); ok {
+		t.Fatalf("RenameSession should invalidate project tree cache")
+	}
+}
+
+func TestTopicMetadataUpdatesPreserveExistingEntriesWhenTimedReadSlotsFull(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	if err := saveTopicTitles(projectRoot, map[string]string{"old": "Old"}); err != nil {
+		t.Fatalf("save old title: %v", err)
+	}
+	if err := saveTopicTitleSources(projectRoot, map[string]string{"old": topicTitleSourceManual}); err != nil {
+		t.Fatalf("save old source: %v", err)
+	}
+	if err := saveTopicCreatedAts(projectRoot, map[string]int64{"old": 100}); err != nil {
+		t.Fatalf("save old created-at: %v", err)
+	}
+
+	release := occupyReadFileWithTimeoutSlots(t)
+	if err := setTopicTitleWithSource(projectRoot, "new", "New", topicTitleSourceAuto); err != nil {
+		t.Fatalf("setTopicTitleWithSource: %v", err)
+	}
+	if err := setTopicCreatedAt(projectRoot, "new", 200); err != nil {
+		t.Fatalf("setTopicCreatedAt: %v", err)
+	}
+	release()
+
+	titles := loadTopicTitles(projectRoot)
+	if got := titles["old"]; got != "Old" {
+		t.Fatalf("old title = %q, want Old (all titles: %v)", got, titles)
+	}
+	if got := titles["new"]; got != "New" {
+		t.Fatalf("new title = %q, want New (all titles: %v)", got, titles)
+	}
+	sources := loadTopicTitleSources(projectRoot)
+	if got := sources["old"]; got != topicTitleSourceManual {
+		t.Fatalf("old source = %q, want %q (all sources: %v)", got, topicTitleSourceManual, sources)
+	}
+	if got := sources["new"]; got != topicTitleSourceAuto {
+		t.Fatalf("new source = %q, want %q (all sources: %v)", got, topicTitleSourceAuto, sources)
+	}
+	created := loadTopicCreatedAts(projectRoot)
+	if got := created["old"]; got != 100 {
+		t.Fatalf("old created-at = %d, want 100 (all created: %v)", got, created)
+	}
+	if got := created["new"]; got != 200 {
+		t.Fatalf("new created-at = %d, want 200 (all created: %v)", got, created)
+	}
+}
+
 func TestDeleteTopicKeepsSessionHistory(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -354,6 +459,54 @@ func TestLegacySessionsMigrateIntoGlobalTopics(t *testing.T) {
 	nodes = NewApp().ListProjectTree()
 	if got := len(nodes[0].Children); got != 2 {
 		t.Fatalf("migration should be idempotent, global topics = %d", got)
+	}
+}
+
+func TestTopicMigrationMarkerGatesRescan(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	writeLegacySession(t, dir, "first.jsonl", "first legacy prompt", time.Now().Add(-time.Hour))
+
+	// First render migrates the legacy session and, with nothing deferred, stamps
+	// the one-shot marker so later renders can skip the scan.
+	NewApp().ListProjectTree()
+	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); err != nil {
+		t.Fatalf("expected migration marker after a complete pass: %v", err)
+	}
+
+	// A legacy session added after the marker is left un-migrated: the gate skips
+	// the per-render scan entirely (real new sessions are born with a TopicID, so
+	// no fresh legacy files actually appear after the pass).
+	second := writeLegacySession(t, dir, "second.jsonl", "second legacy prompt", time.Now())
+	NewApp().ListProjectTree()
+	meta, ok, err := agent.LoadBranchMeta(second)
+	if err != nil {
+		t.Fatalf("load second meta: %v", err)
+	}
+	if ok && strings.TrimSpace(meta.TopicID) != "" {
+		t.Fatalf("marker should have gated re-scan, but second session was migrated: %+v", meta)
+	}
+}
+
+func TestTopicMigrationDefersEmptyLegacySession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	// An empty legacy session (no user turns) is not migratable yet but could gain
+	// content later, so the pass must NOT mark the dir done — otherwise the gate
+	// would hide it forever.
+	if err := os.WriteFile(filepath.Join(dir, "empty.jsonl"), nil, 0o644); err != nil {
+		t.Fatalf("write empty session: %v", err)
+	}
+
+	NewApp().ListProjectTree()
+	if _, err := os.Stat(filepath.Join(dir, topicMigrationMarker)); err == nil {
+		t.Fatal("an empty legacy session must defer marking, but the dir was marked done")
 	}
 }
 

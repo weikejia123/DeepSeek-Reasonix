@@ -28,6 +28,7 @@
 **Reasonix v1.8.1** 开始，用户配置位于 macOS/Linux 的
 `~/.reasonix/config.toml`，Windows 为 `%AppData%\reasonix\config.toml`；迁移和相关数据路径见
 [配置路径](./CONFIG_PATHS.zh-CN.md)。密钥经环境变量通过 `api_key_env` 注入，绝不写入配置文件。
+标注为“仅用户/全局”的字段（包括 agent 轮数上限）不会被 `./reasonix.toml` 覆盖。
 credentials 默认使用 `credentials_store = "auto"`：优先系统密钥库，不可用时 fallback 到 Reasonix home 下的文件。
 Reasonix 保存的新密钥不会写入项目 `.env`；项目 `.env` 只用于兼容读取或用户主动的项目级覆盖。
 
@@ -42,13 +43,13 @@ default_model = "deepseek-flash"   # 执行器；设 [agent].planner_model 可�
 # shortcut_layout = "desktop"      # classic|desktop；兼容旧配置
 
 [agent]
-max_steps = 0                    # 执行器工具调用轮数；0 表示不限
-planner_max_steps = 12           # 规划器只读工具调用轮数；0 表示不限
+max_steps = 0                    # 仅用户/全局；执行器工具调用轮数；0 表示不限
+planner_max_steps = 0            # 仅用户/全局；规划器只读工具调用轮数；0 表示不限
 reasoning_language = "auto"      # 可见思考过程语言：auto|zh|en
-# planner_model = "mimo-pro"          # 可选的低频规划器
+# planner_model = "deepseek-pro"      # 可选的低频规划器
 # subagent_model = "deepseek-pro"     # runAs=subagent skill 的默认模型
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
-auto_plan = "off"                  # off|on；off 表示计划模式仅手动开启
+auto_plan = "off"                  # 仅用户级生效；off|on；off 表示计划模式仅手动开启
 # auto_plan_classifier = "deepseek-flash"   # 可选；只在边界任务上调用
 
 [[providers]]
@@ -57,7 +58,7 @@ kind        = "openai"
 base_url    = "https://api.deepseek.com"
 model       = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
-# 还有预设：deepseek-pro、mimo-pro（mimo-v2.5-pro）、mimo-flash（mimo-v2.5） @ token-plan-cn.xiaomimimo.com/v1
+# 还有预设：deepseek-pro
 
 [tools]
 enabled = []   # 省略/为空 = 全部内置工具
@@ -101,10 +102,12 @@ command = "reasonix-plugin-example"
 
 | 按键或控件 | 作用 | 说明 |
 | --- | --- | --- |
-| macOS `Cmd+K`，Windows/Linux `Ctrl+K` | 打开命令面板 | `Esc` 关闭命令面板。 |
+| macOS `Cmd+K`，Windows/Linux `Ctrl+K` | 打开或关闭命令面板 | 打开时会聚焦搜索框；`Esc` 关闭命令面板。 |
 | macOS `Cmd+,`，Windows/Linux `Ctrl+,` | 打开设置 | 在设置里的 **快捷键** 页可自定义桌面端绑定。 |
 | macOS `Cmd+W`，Windows/Linux `Ctrl+W` | 关闭当前顶部标签页 | 最后一个标签页仍由原有关闭保护保留。 |
-| `Cmd+B` / `Ctrl+B` | 展开或收起最近的 shell 输出 | 和点击折叠 shell 输出提示是同一个动作。 |
+| `Cmd+B` / `Ctrl+B` | 显示或隐藏左侧边栏 | 和点击侧边栏开关是同一个动作。 |
+| `Cmd+Shift+B` / `Ctrl+Shift+B` | 展开或收起最近的 shell 输出 | 和点击折叠 shell 输出提示是同一个动作。 |
+| macOS `Cmd+1`-`Cmd+9`，其它平台 `Ctrl+1`-`Ctrl+9` | 跳转到侧边栏中对应编号的可见对话 | 短暂按住 `Cmd`/`Ctrl` 会显示编号标记；已有自定义快捷键占用相同按键时，自定义动作优先生效。 |
 | macOS `Cmd++`、`Cmd+-`、`Cmd+0`；其它平台 `Ctrl++`、`Ctrl+-`、`Ctrl+0` | 放大、缩小或重置文字大小 | 对把加号上报为 `=` 的键盘也兼容。 |
 | `?` | 打开键盘快捷键帮助表 | 帮助表显示当前实际生效的桌面端绑定。 |
 
@@ -327,15 +330,14 @@ session），向导后手动在 `reasonix.toml` 加一行即可：
 ```toml
 [agent]
 planner_model = "deepseek-pro"   # 作为低频规划器
-planner_max_steps = 12           # 暂停前允许的只读工具调用轮数
 ```
 
 Planner 会看到已加载的 `REASONIX.md` / `AGENTS.md` 记忆，并拿到一小组只读研究工具，
 因此可以先检查相关文件再把计划交给执行器。写入类和流程类工具仍只给执行器使用。
 `max_steps` 限制执行器；`planner_max_steps` 只限制规划器，两者都可设为 `0` 表示不限。
 
-个人偏好的轮数上限建议放在用户级配置。只有当某个仓库确实需要团队共享覆盖时，
-再写进项目的 `./reasonix.toml`，例如超大代码库需要更高的 planner 上限。
+轮数上限请放在用户级配置。项目 `./reasonix.toml` 不会覆盖 `max_steps` 或
+`planner_max_steps`。
 
 Subagent skills 默认继承执行器模型。设置 `subagent_model` 可让它们统一走另一个已配置
 模型；设置 `subagent_models` 则只覆盖 `review`、`security_review` 等指定 skill。
@@ -345,10 +347,11 @@ Subagent skills 默认继承执行器模型。设置 `subagent_model` 可让它�
 编辑文件或执行有副作用的命令。`auto_plan_classifier` 可以指定便宜的 provider，例如
 `deepseek-flash`；它只在边界输入上调用，分类失败会回退到启发式规则。也可以用
 在 `reasonix` 会话里用 `/auto-plan off|on` 修改用户级设置，或在 shell/脚本里用
-`reasonix config auto-plan off|on`。可见思考语言也采用同样形态：会话里用
-`/reasoning-language auto|zh|en`，shell/脚本里用
-`reasonix config reasoning-language auto|zh|en`。只有明确想写项目级覆盖时，才给
-shell 命令加 `--local`。
+`reasonix config auto-plan off|on`。Auto-plan 只认用户级设置；项目
+`reasonix.toml` 里的 `agent.auto_plan` 会被忽略。可见思考语言也采用类似形态：
+会话里用 `/reasoning-language auto|zh|en`，shell/脚本里用
+`reasonix config reasoning-language auto|zh|en`。只有明确想为 reasoning-language
+写项目级覆盖时，才给 shell 命令加 `--local`。
 
 桌面端“协作方式”菜单里的计划模式、目标模式和省 token 模式的使用方法与注意事项，
 见 [`COLLABORATION_MODES.zh-CN.md`](./COLLABORATION_MODES.zh-CN.md)。

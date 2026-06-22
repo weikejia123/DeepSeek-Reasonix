@@ -488,10 +488,12 @@ export interface ServerView {
   name: string;
   transport: string;
   status: "connected" | "deferred" | "failed" | "initializing" | "disabled";
+  startIntent?: "off" | "automatic" | string;
+  runtimeState?: "idle" | "connecting" | "ready" | "issue" | string;
   builtIn?: boolean;
   configured?: boolean;
   autoStart: boolean;
-  tier?: "lazy" | "background" | "eager" | string;
+  tier?: "background" | "eager" | string;
   command?: string;
   args?: string[];
   url?: string;
@@ -890,7 +892,7 @@ export interface SettingsView {
   agent: AgentView;
   bot: BotSettingsView;
   desktopLanguage: string; // "" | "en" | "zh"; empty = auto
-  desktopLayoutStyle: string; // "classic" | "workbench"
+  desktopLayoutStyle: string; // "classic" | "workbench" | "creation"
   desktopTheme: string; // "auto" | "dark" | "light"
   desktopThemeStyle: string;
   closeBehavior: string; // "background" | "quit"

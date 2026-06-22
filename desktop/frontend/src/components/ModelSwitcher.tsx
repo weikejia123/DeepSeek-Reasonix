@@ -96,7 +96,7 @@ export function ModelSwitcher({ label, tabId, onPick }: { label: string; tabId?:
         onClick={() => setOpen((v) => !v)}
       >
         <Brain size={13} className="modelsw__kind" />
-        <span className="modelsw__label">{label}{currentProvider ? ` · ${currentProvider}` : ""}</span>
+        <span className="modelsw__label">{label}{currentProvider && <span className="modelsw__provider"> · {currentProvider}</span>}</span>
         <ChevronsUpDown size={11} />
       </button>
       <AnchoredPopover
@@ -156,14 +156,6 @@ function providerLabel(provider: string, t: ReturnType<typeof useT>): string {
     case "deepseek-flash":
     case "deepseek-pro":
       return t("settings.providerLabel.deepseek");
-    case "mimo-api":
-    case "mimo":
-    case "xiaomi-mimo":
-      return t("settings.providerLabel.mimoApi");
-    case "mimo-token-plan":
-    case "mimo-pro":
-    case "mimo-flash":
-      return t("settings.providerLabel.mimoTokenPlan");
     default:
       return provider;
   }

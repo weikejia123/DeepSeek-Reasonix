@@ -85,6 +85,8 @@ export const Transcript = memo(function Transcript({
   rewindDisabled = false,
   running = false,
   questionNavigator = true,
+  welcomeVariant = "default",
+  actionHoverMenus = false,
   rewindSignal = 0,
 }: {
   items: Item[];
@@ -99,6 +101,8 @@ export const Transcript = memo(function Transcript({
   rewindDisabled?: boolean;
   running?: boolean;
   questionNavigator?: boolean;
+  welcomeVariant?: "default" | "creation";
+  actionHoverMenus?: boolean;
   rewindSignal?: number;
 }) {
   const {
@@ -361,6 +365,7 @@ export const Transcript = memo(function Transcript({
           checkpoint={checkpointsByTurn.get(turn)}
           actionPending={actionPending}
           rewindDisabled={rewindDisabled}
+          hoverMenus={actionHoverMenus}
           onRewind={(targetTurn, scope) => {
             onRewind?.(targetTurn, scope);
             setOpenAction(null);
@@ -541,7 +546,7 @@ export const Transcript = memo(function Transcript({
       if (!running) pushTurnActions();
     }
     return out;
-  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, subcallsByParent, userTurn, checkpointsByTurn, displayMode, stepGroups, tabId]);
+  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, subcallsByParent, userTurn, checkpointsByTurn, displayMode, stepGroups, tabId, actionHoverMenus]);
 
   // ── Assemble rendered output ──────────────────────────────────────────────
   // Warm/cold zone is a separate memo'd WarmZone component so streaming tokens
@@ -553,7 +558,7 @@ export const Transcript = memo(function Transcript({
       ref={scrollRef}
       onScroll={onScroll}
     >
-      {empty && <Welcome onPrompt={onPrompt} />}
+      {empty && <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
 
       {!empty && showQuestionNav && (
         <QuestionJumpBar questions={questions} onJump={handleJumpToQuestion} />
@@ -574,6 +579,7 @@ export const Transcript = memo(function Transcript({
             warmOpenAction={openAction}
             warmActionPending={actionPending}
             warmRewindDisabled={rewindDisabled}
+            warmActionHoverMenus={actionHoverMenus}
             warmOnRewind={onRewind}
             warmSetOpenAction={setOpenAction}
             warmOnEdit={onEditPrompt}
@@ -613,6 +619,7 @@ const WarmZone = memo(function WarmZone({
   warmOpenAction,
   warmActionPending,
   warmRewindDisabled,
+  warmActionHoverMenus,
   warmOnRewind,
   warmSetOpenAction,
   warmOnEdit,
@@ -632,6 +639,7 @@ const WarmZone = memo(function WarmZone({
   warmOpenAction: OpenTurnAction | null;
   warmActionPending: boolean;
   warmRewindDisabled: boolean;
+  warmActionHoverMenus: boolean;
   warmOnRewind: ((turn: number, scope: string) => void) | undefined;
   warmSetOpenAction: (action: OpenTurnAction | null) => void;
   warmOnEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
@@ -688,6 +696,7 @@ const WarmZone = memo(function WarmZone({
               openAction={warmOpenAction}
               actionPending={warmActionPending}
               rewindDisabled={warmRewindDisabled}
+              actionHoverMenus={warmActionHoverMenus}
               onRewind={warmOnRewind}
               setOpenAction={warmSetOpenAction}
               onEdit={warmOnEdit}
@@ -733,6 +742,7 @@ function WarmTurnItems({
   openAction,
   actionPending,
   rewindDisabled,
+  actionHoverMenus,
   onRewind,
   setOpenAction,
   onEdit,
@@ -747,6 +757,7 @@ function WarmTurnItems({
   openAction: OpenTurnAction | null;
   actionPending: boolean;
   rewindDisabled: boolean;
+  actionHoverMenus: boolean;
   onRewind: ((turn: number, scope: string) => void) | undefined;
   setOpenAction: (action: OpenTurnAction | null) => void;
   onEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
@@ -770,6 +781,7 @@ function WarmTurnItems({
         checkpoint={checkpoints.get(turn)}
         actionPending={actionPending}
         rewindDisabled={rewindDisabled}
+        hoverMenus={actionHoverMenus}
         onRewind={(targetTurn, scope) => {
           onRewind?.(targetTurn, scope);
           setOpenAction(null);
@@ -938,6 +950,17 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId }: TurnCollapse
 
   if (displayItems.length === 0) return null;
 
+  const collapseKind = displayItems.some((it) => it.kind === "tool")
+    ? "tool"
+    : displayItems.some((it) => it.kind === "assistant" && Boolean(it.reasoning))
+      ? "reasoning"
+      : "process";
+  const creationLabel = collapseKind === "tool"
+    ? t("creation.toolCallsLabel")
+    : collapseKind === "reasoning"
+      ? t("creation.reasoningLabel")
+      : label;
+
   // Pre-compute body: group consecutive completed read-only tools into ReadOnlyBatch
   const body: ReactNode[] = [];
   const roBatch: ToolItem[] = [];
@@ -970,7 +993,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId }: TurnCollapse
   flushRO();
 
   return (
-    <div className={`turn-collapse${open ? " turn-collapse--open" : ""}`} data-entrance={displayItems[0]?.id || undefined}>
+    <div className={`turn-collapse${open ? " turn-collapse--open" : ""}`} data-kind={collapseKind} data-entrance={displayItems[0]?.id || undefined}>
       <button
         type="button"
         className="reasoning__head"
@@ -978,7 +1001,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId }: TurnCollapse
         aria-expanded={open}
       >
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
-        <span className="turn-collapse__label">{label}</span>
+        <span className="turn-collapse__label" data-creation-label={creationLabel}>{label}</span>
       </button>
       <div ref={bodyRef} className="turn-collapse__body">{body}</div>
     </div>

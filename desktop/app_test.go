@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
@@ -69,7 +70,7 @@ func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
 
 // setTestCtrl creates a minimal workspace tab (if needed) and sets its
 // controller, so tests don't depend on the old App.ctrl field.
-func (a *App) setTestCtrl(ctrl *control.Controller, model string) {
+func (a *App) setTestCtrl(ctrl control.SessionAPI, model string) {
 	if len(a.tabs) == 0 {
 		tab := &WorkspaceTab{
 			ID:          "test",
@@ -867,8 +868,8 @@ func TestSettingsSurfacesOfficialProviderTemplatesSeparately(t *testing.T) {
 	if providers["mimo-api"] {
 		t.Fatalf("mimo-api should not be mixed into configured providers: %+v", got.Providers)
 	}
-	if !official["deepseek"] || !official["mimo-api"] || !official["mimo-token-plan"] {
-		t.Fatalf("official providers = %+v, want deepseek, mimo-api, and mimo-token-plan", got.OfficialProviders)
+	if !official["deepseek"] || official["mimo-api"] || official["mimo-token-plan"] {
+		t.Fatalf("official providers = %+v, want only deepseek", got.OfficialProviders)
 	}
 }
 
@@ -992,8 +993,8 @@ api_key_env = "MIMO_API_KEY"
 	if !providers["deepseek"].Added || !providers["deepseek"].KeySet {
 		t.Fatalf("deepseek provider = %+v, want inferred added key-set provider", providers["deepseek"])
 	}
-	if !providers["mimo-token-plan"].Added || !providers["mimo-token-plan"].KeySet {
-		t.Fatalf("mimo-token-plan provider = %+v, want inferred added key-set provider", providers["mimo-token-plan"])
+	if !providers["mimo-pro"].Added || !providers["mimo-pro"].KeySet || providers["mimo-pro"].BuiltIn {
+		t.Fatalf("mimo-pro provider = %+v, want inferred custom key-set provider", providers["mimo-pro"])
 	}
 	if got.DefaultModel != "deepseek/deepseek-v4-pro" {
 		t.Fatalf("default_model = %q, want deepseek/deepseek-v4-pro", got.DefaultModel)
@@ -1044,8 +1045,8 @@ func TestSettingsInfersConfiguredBuiltInsWithoutConfigFile(t *testing.T) {
 	if !providers["deepseek"].Added || !providers["deepseek"].KeySet {
 		t.Fatalf("deepseek provider = %+v, want inferred added provider from configured key", providers["deepseek"])
 	}
-	if !providers["mimo-token-plan"].Added || !providers["mimo-token-plan"].KeySet {
-		t.Fatalf("mimo-token-plan provider = %+v, want inferred added provider from configured key", providers["mimo-token-plan"])
+	if _, ok := providers["mimo-token-plan"]; ok {
+		t.Fatalf("mimo-token-plan should not be inferred from MIMO_API_KEY alone: %+v", providers["mimo-token-plan"])
 	}
 }
 
@@ -1259,11 +1260,11 @@ api_key_env = "MIMO_API_KEY"
 	}
 	cfg := config.LoadForEdit(config.UserConfigPath())
 	access := providerAccessSet(cfg.Desktop.ProviderAccess)
-	if access["deepseek"] || !access["mimo-token-plan"] {
-		t.Fatalf("provider_access = %+v, want only mimo-token-plan", cfg.Desktop.ProviderAccess)
+	if access["deepseek"] || !access["mimo-pro"] {
+		t.Fatalf("provider_access = %+v, want only mimo-pro", cfg.Desktop.ProviderAccess)
 	}
-	if cfg.DefaultModel != "mimo-token-plan/mimo-v2.5-pro" {
-		t.Fatalf("default_model = %q, want mimo-token-plan/mimo-v2.5-pro", cfg.DefaultModel)
+	if cfg.DefaultModel != "mimo-pro/mimo-v2.5-pro" {
+		t.Fatalf("default_model = %q, want mimo-pro/mimo-v2.5-pro", cfg.DefaultModel)
 	}
 }
 
@@ -1288,8 +1289,8 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 	for _, want := range []string{
 		"deepseek/deepseek-v4-flash",
 		"deepseek/deepseek-v4-pro",
-		"mimo-token-plan/mimo-v2.5-pro",
-		"mimo-token-plan/mimo-v2.5",
+		"mimo-pro/mimo-v2.5-pro",
+		"mimo-pro/mimo-v2.5",
 	} {
 		if !refs[want] {
 			t.Fatalf("Models() refs = %+v, missing %s", models, want)
@@ -1437,7 +1438,7 @@ func TestModelsForTabKeepsUserProvidersWithProjectConfig(t *testing.T) {
 	t.Setenv("MIMO_API_KEY", "sk-test")
 
 	userCfg := config.Default()
-	userCfg.DefaultModel = "mimo-token-plan/mimo-v2.5-pro"
+	userCfg.DefaultModel = "mimo-pro/mimo-v2.5-pro"
 	userCfg.Desktop.ProviderAccess = []string{"deepseek-flash", "mimo-pro"}
 	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatalf("save user config: %v", err)
@@ -1469,8 +1470,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 	refs := modelRefsFromView(models)
 	for _, want := range []string{
 		"deepseek/deepseek-v4-flash",
-		"mimo-token-plan/mimo-v2.5-pro",
-		"mimo-token-plan/mimo-v2.5",
+		"mimo-pro/mimo-v2.5-pro",
 	} {
 		if !refs[want] {
 			t.Fatalf("ModelsForTab refs = %+v, missing %s", models, want)
@@ -1486,6 +1486,7 @@ func TestSetModelForTabRejectsProviderOutsideAccess(t *testing.T) {
 	cfg := config.Default()
 	cfg.DefaultModel = "deepseek-flash/deepseek-v4-flash"
 	cfg.Desktop.ProviderAccess = []string{"deepseek-flash"}
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{Name: "other", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "other-model"})
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -1497,7 +1498,7 @@ func TestSetModelForTabRejectsProviderOutsideAccess(t *testing.T) {
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
 
-	err := app.SetModelForTab(tab.ID, "mimo-flash/mimo-v2.5")
+	err := app.SetModelForTab(tab.ID, "other/other-model")
 	if err == nil || !strings.Contains(err.Error(), "not available") {
 		t.Fatalf("SetModelForTab hidden provider error = %v, want not available", err)
 	}
@@ -2753,6 +2754,56 @@ func TestOpenChannelSessionForTabIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestCloseReadOnlyChannelTabDoesNotSnapshotTranscript(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "bot-channel.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"from channel"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	app := NewApp()
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: filepath.Join(dir, "active.jsonl"), Label: "test"})
+	app.setTestCtrl(ctrl, "")
+	defer ctrl.Close()
+
+	if _, err := app.OpenChannelSessionForTab("test", path); err != nil {
+		t.Fatalf("OpenChannelSessionForTab: %v", err)
+	}
+	app.mu.Lock()
+	app.tabs["survivor"] = &WorkspaceTab{ID: "survivor", Scope: "global", Ready: true, disabledMCP: map[string]ServerView{}}
+	app.tabOrder = []string{"test", "survivor"}
+	app.activeTabID = "test"
+	app.mu.Unlock()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open append: %v", err)
+	}
+	if _, err := f.WriteString(`{"role":"user","content":"external close follow-up"}` + "\n"); err != nil {
+		f.Close()
+		t.Fatalf("append external message: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close append: %v", err)
+	}
+
+	if err := app.CloseTab("test"); err != nil {
+		t.Fatalf("CloseTab: %v", err)
+	}
+	afterClose, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after close: %v", err)
+	}
+	if !strings.Contains(string(afterClose), "external close follow-up") {
+		t.Fatalf("closing read-only channel tab overwrote external append:\n%s", afterClose)
+	}
+}
+
 func TestResumeSessionRejectsCleanupPending(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -2997,7 +3048,7 @@ func TestForkCreatesActiveTabWithoutSwitchingSourceController(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesShowsDefaultMCPAsInitializingNotDisabled(t *testing.T) {
+func TestCapabilitiesShowsDefaultMCPAsAutomaticIdleNotDisabled(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -3021,13 +3072,72 @@ args = ["-y", "@playwright/mcp"]
 	view := app.Capabilities()
 	for _, s := range view.Servers {
 		if s.Name == "playwright" {
-			if s.Status != "initializing" {
-				t.Fatalf("default MCP status = %q, want initializing; server = %+v", s.Status, s)
+			if s.Status != "deferred" || s.StartIntent != "automatic" || s.RuntimeState != "idle" {
+				t.Fatalf("default MCP view = %+v, want deferred automatic idle", s)
 			}
 			return
 		}
 	}
 	t.Fatalf("playwright MCP missing from Capabilities: %+v", view.Servers)
+}
+
+func TestDesktopSharedHostBackgroundMCPAutoConnectsOnBoot(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(fmt.Sprintf(`
+[[plugins]]
+name = "h"
+type = "http"
+url = %q
+`, srv.URL)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sharedHost := plugin.NewHost()
+	defer sharedHost.Close()
+	ctrl, err := boot.Build(ctx, boot.Options{
+		WorkspaceRoot: dir,
+		SessionDir:    filepath.Join(dir, "sessions"),
+		SharedHost:    sharedHost,
+		Stderr:        io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("boot.Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !sharedHost.HasClient("h") && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !sharedHost.HasClient("h") {
+		t.Fatalf("background MCP did not auto-connect; connecting=%v failures=%+v", sharedHost.ConnectingServers(), sharedHost.Failures())
+	}
+
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{
+		"test": {
+			ID:            "test",
+			Scope:         "global",
+			WorkspaceRoot: dir,
+			Ready:         true,
+			Ctrl:          ctrl,
+			SharedHostKey: dir,
+			disabledMCP:   map[string]ServerView{},
+		},
+	}
+	app.activeTabID = "test"
+
+	view := app.MCPServers()
+	if len(view) != 1 || view[0].Name != "h" || view[0].Status != "connected" || view[0].StartIntent != "automatic" || view[0].RuntimeState != "ready" || view[0].Tools != 1 {
+		t.Fatalf("MCPServers() = %+v, want h connected automatic ready with one tool", view)
+	}
 }
 
 func TestMCPServersMatchesCapabilitiesServerProjection(t *testing.T) {
@@ -3348,7 +3458,7 @@ tier = "lazy"
 	view := app.Capabilities()
 	for _, s := range view.Servers {
 		if s.Name == "dida" {
-			if s.Status != "initializing" || s.AuthStatus != "possible" || s.AuthURL != "https://mcp.dida365.com" {
+			if s.Status != "deferred" || s.StartIntent != "automatic" || s.RuntimeState != "idle" || s.AuthStatus != "possible" || s.AuthURL != "https://mcp.dida365.com" {
 				t.Fatalf("dida auth diagnosis = %+v", s)
 			}
 			return
@@ -3471,7 +3581,7 @@ tier = "lazy"
 	view := app.Capabilities()
 	for _, s := range view.Servers {
 		if s.Name == "figma" {
-			if s.Status != "initializing" || s.AuthStatus != "possible" {
+			if s.Status != "deferred" || s.StartIntent != "automatic" || s.RuntimeState != "idle" || s.AuthStatus != "possible" {
 				t.Fatalf("figma should return to background possible auth: %+v", s)
 			}
 			return
@@ -3658,16 +3768,16 @@ name = "codegraph"
 	defer app.activeCtrl().Close()
 
 	view := app.Capabilities()
-	foundInitializing := false
+	foundIdle := false
 	for _, s := range view.Servers {
 		if s.Name == "codegraph" {
-			foundInitializing = true
-			if s.Status != "initializing" {
-				t.Fatalf("initial codegraph status = %q, want initializing; server = %+v", s.Status, s)
+			foundIdle = true
+			if s.Status != "deferred" || s.StartIntent != "automatic" || s.RuntimeState != "idle" {
+				t.Fatalf("initial codegraph server = %+v, want automatic idle background state", s)
 			}
 		}
 	}
-	if !foundInitializing {
+	if !foundIdle {
 		t.Fatalf("codegraph missing before reconnect: %+v", view.Servers)
 	}
 	if _, ok := reg.Get("mcp__codegraph__connect"); !ok {
@@ -3915,7 +4025,7 @@ func startNonCooperativeSessionJob(t *testing.T, jm *jobs.Manager, sessionPath s
 	}
 }
 
-func waitNotRunning(t *testing.T, ctrl *control.Controller) {
+func waitNotRunning(t *testing.T, ctrl control.SessionAPI) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for ctrl.Running() {
