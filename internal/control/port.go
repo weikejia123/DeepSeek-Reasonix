@@ -43,7 +43,8 @@ type Lifecycle interface {
 }
 
 // TurnControl covers driving a model turn and observing its run state: the
-// various submit/run entry points, cancellation, steering, and status reads.
+// various submit/run entry points, cancellation, steering, A-Loop, and
+// status reads.
 type TurnControl interface {
 	Submit(input string)
 	SubmitDisplay(display, input string)
@@ -63,6 +64,9 @@ type TurnControl interface {
 	Turn() int
 	History() []provider.Message
 	ToolResult(toolID string) *ToolResultData
+	StartLoop(projectRoot string) error
+	StopLoop()
+	LoopActive() bool
 }
 
 // Approvals covers tool-approval and ask prompts plus the runtime approval
