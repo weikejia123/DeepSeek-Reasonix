@@ -412,6 +412,112 @@ func TestFinalReadinessStopsAfterRepeatedBlocks(t *testing.T) {
 	}
 }
 
+func TestFinalReadinessPermissionLoopGuardAllowsBlockedFinal(t *testing.T) {
+	todoWrite, ok := tool.LookupBuiltin("todo_write")
+	if !ok {
+		t.Fatal("todo_write builtin not registered")
+	}
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file", readOnly: false})
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	reg.Add(todoWrite)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{
+			toolCallChunk("w1", "write_file", `{"path":"changed.go","content":"package main"}`),
+			toolCallChunk("t1", "todo_write", `{"todos":[{"content":"Edit code","status":"in_progress"}]}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "premature final"}, {Type: provider.ChunkDone}},
+		{toolCallChunk("b1", "bash", `{"command":"go test ./..."}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("b2", "bash", `{"command":"git status --short"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("b3", "bash", `{"command":"ls -la"}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "blocked by permission"}, {Type: provider.ChunkDone}},
+	}}
+	sink, notices := noticeRecorder()
+	a := New(prov, reg, NewSession(""), Options{
+		Gate: &stubGate{deny: map[string]bool{"bash": true}},
+	}, sink)
+
+	if err := a.Run(context.Background(), "edit with todo, then hit bash permission blocks"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.call != 6 {
+		t.Fatalf("provider calls = %d, want readiness retry, three blocked bash calls, then final", prov.call)
+	}
+	if !sessionHasUserMessageContaining(a.session, "final-answer readiness") {
+		t.Fatal("missing synthetic readiness retry message")
+	}
+	if got := lastToolResult(a.session, "bash"); !strings.Contains(got, "[loop guard]") {
+		t.Fatalf("last bash result = %q, want permission loop guard", got)
+	}
+	if got := toolResults(a.session, "bash"); len(got) != stormBreakThreshold {
+		t.Fatalf("bash results = %d, want exactly %d blocked attempts", len(got), stormBreakThreshold)
+	}
+	if len(*notices) == 0 {
+		t.Fatal("loop guard should emit a user-facing notice")
+	}
+}
+
+// TestFinalReadinessPermissionLoopGuardAllowsBlockedFinalForBatch pins the
+// multi-call variant: the guard text lands on the batch's FIRST result, so any
+// detection keyed to the latest tool message misses it. The loop-guard pass is
+// host state and must let the model report the blocker regardless of where in
+// the batch the guard text sits.
+func TestFinalReadinessPermissionLoopGuardAllowsBlockedFinalForBatch(t *testing.T) {
+	todoWrite, ok := tool.LookupBuiltin("todo_write")
+	if !ok {
+		t.Fatal("todo_write builtin not registered")
+	}
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "write_file", readOnly: false})
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	reg.Add(todoWrite)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{
+			toolCallChunk("w1", "write_file", `{"path":"changed.go","content":"package main"}`),
+			toolCallChunk("t1", "todo_write", `{"todos":[{"content":"Edit code","status":"in_progress"}]}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "premature final"}, {Type: provider.ChunkDone}},
+		{
+			toolCallChunk("b1a", "bash", `{"command":"go test ./..."}`),
+			toolCallChunk("b1b", "bash", `{"command":"go vet ./..."}`),
+			{Type: provider.ChunkDone},
+		},
+		{
+			toolCallChunk("b2a", "bash", `{"command":"git status --short"}`),
+			toolCallChunk("b2b", "bash", `{"command":"git diff --stat"}`),
+			{Type: provider.ChunkDone},
+		},
+		{
+			toolCallChunk("b3a", "bash", `{"command":"ls -la"}`),
+			toolCallChunk("b3b", "bash", `{"command":"pwd"}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "blocked by permission"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, reg, NewSession(""), Options{
+		Gate: &stubGate{deny: map[string]bool{"bash": true}},
+	}, event.Discard)
+
+	if err := a.Run(context.Background(), "edit with todo, then hit batched bash permission blocks"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.call != 6 {
+		t.Fatalf("provider calls = %d, want readiness retry, three blocked batches, then final", prov.call)
+	}
+	results := toolResults(a.session, "bash")
+	if len(results) != 2*stormBreakThreshold {
+		t.Fatalf("bash results = %d, want %d blocked attempts across three batches", len(results), 2*stormBreakThreshold)
+	}
+	if !strings.Contains(results[len(results)-2], "[loop guard]") {
+		t.Fatalf("first result of the guarded batch should carry the loop guard, got: %q", results[len(results)-2])
+	}
+	if strings.Contains(results[len(results)-1], "[loop guard]") {
+		t.Fatalf("last result of the guarded batch should stay untouched (the pass must not depend on it), got: %q", results[len(results)-1])
+	}
+}
+
 func TestTodoWriteOnlyTurnMayEndWithIncompleteTodos(t *testing.T) {
 	todoWrite, ok := tool.LookupBuiltin("todo_write")
 	if !ok {
@@ -532,7 +638,7 @@ func TestEvidenceFlowRejectsUncitedCommand(t *testing.T) {
 	}
 
 	got := toolResult(a.session, "complete_step")
-	if !strings.Contains(got, "no matching successful bash receipt") {
+	if !strings.Contains(got, "has no matching successful receipt") {
 		t.Fatalf("complete_step result = %q, want the uncited command rejected", got)
 	}
 	if strings.Contains(got, "host-verified") {
@@ -660,6 +766,55 @@ func TestEvidenceFlowRejectsTodoCompletionWithoutCompleteStep(t *testing.T) {
 	got := results[1]
 	if !strings.Contains(got, "complete_step") {
 		t.Fatalf("todo_write result = %q, want completion rejected until complete_step", got)
+	}
+}
+
+func TestEvidenceFlowRecoversTodoCompletionAfterFailedCompleteStepWithProgress(t *testing.T) {
+	todoWrite, ok := tool.LookupBuiltin("todo_write")
+	if !ok {
+		t.Fatal("todo_write builtin not registered")
+	}
+	completeStep, ok := tool.LookupBuiltin("complete_step")
+	if !ok {
+		t.Fatal("complete_step builtin not registered")
+	}
+	reg := tool.NewRegistry()
+	reg.Add(todoWrite)
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	reg.Add(completeStep)
+
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{
+			toolCallChunk("c1", "todo_write", `{"todos":[{"content":"Run project script","status":"in_progress"}]}`),
+			toolCallChunk("c2", "bash", `{"command":"python \"script.py\""}`),
+			toolCallChunk("c3", "complete_step", `{
+				"step":"Run project script",
+				"result":"script ran",
+				"evidence":[{"kind":"verification","summary":"script completed","command":"python other.py"}]
+			}`),
+			toolCallChunk("c4", "todo_write", `{"todos":[{"content":"Run project script","status":"completed"}]}`),
+			{Type: provider.ChunkDone},
+		},
+		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
+	}}
+
+	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
+	if err := a.Run(context.Background(), "recover after a failed complete_step"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	stepResult := lastToolResult(a.session, "complete_step")
+	if !strings.Contains(stepResult, "no matching successful receipt") {
+		t.Fatalf("complete_step result = %q, want the sign-off attempt to fail first", stepResult)
+	}
+	if !strings.Contains(stepResult, `python \"script.py\"`) {
+		t.Fatalf("complete_step result = %q, want the self-correction hint to include the real command", stepResult)
+	}
+	if strings.Contains(stepResult, "todo_write") {
+		t.Fatalf("complete_step result = %q, want command hints without todo tool noise", stepResult)
+	}
+	if got := lastToolResult(a.session, "todo_write"); !strings.Contains(got, "1 completed") {
+		t.Fatalf("todo_write result = %q, want completion recovery accepted", got)
 	}
 }
 

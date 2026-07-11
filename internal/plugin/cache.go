@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/tool"
 )
 
@@ -89,6 +90,12 @@ func SpecFingerprint(s Spec) string {
 	}
 	writeKV(h, "env", s.Env)
 	writeKV(h, "headers", s.Headers)
+	if len(s.ReadOnlyToolNames) > 0 {
+		writeBoolKV(h, "read_only_tool", s.ReadOnlyToolNames)
+	}
+	if len(s.ReadOnlyModelToolNames) > 0 {
+		writeBoolKV(h, "read_only_model_tool", s.ReadOnlyModelToolNames)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -101,7 +108,7 @@ func LoadCachedSchema(name, expectedHash string) (*CachedSchema, bool) {
 	if p == "" {
 		return nil, false
 	}
-	b, err := os.ReadFile(p)
+	b, err := fileencoding.ReadFileUTF8(p)
 	if err != nil {
 		return nil, false
 	}
@@ -217,5 +224,22 @@ func writeKV(h io.Writer, key string, m map[string]string) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		writeField(h, key+"."+k, m[k])
+	}
+}
+
+func writeBoolKV(h io.Writer, key string, m map[string]bool) {
+	if len(m) == 0 {
+		writeField(h, key, "")
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if v {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		writeField(h, key+"."+k, "true")
 	}
 }

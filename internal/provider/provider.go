@@ -30,17 +30,32 @@ const (
 type Message struct {
 	Role             Role     `json:"role"`
 	Content          string   `json:"content,omitempty"`
-	Images           []string `json:"images,omitempty"`            // data URLs (data:<mime>;base64,…); embedded only for vision-capable models
+	Images           []string `json:"images,omitempty"`            // data URLs (data:<mime>;base64,…) on user (attachments) and tool (MCP image results) messages; embedded only for vision-capable models
 	ReasoningContent string   `json:"reasoning_content,omitempty"` // assistant: thinking-mode chain-of-thought, round-tripped on multi-turn
 	// ReasoningSignature is an opaque, provider-issued proof that ReasoningContent
 	// is genuine model output. Anthropic requires the signed thinking block be
 	// replayed on the next turn when a tool call followed thinking; providers
 	// without signed reasoning (e.g. the openai-compatible ones) leave it empty.
 	// Round-tripped alongside ReasoningContent.
-	ReasoningSignature string     `json:"reasoning_signature,omitempty"`
-	ToolCalls          []ToolCall `json:"tool_calls,omitempty"`   // set by assistant
-	ToolCallID         string     `json:"tool_call_id,omitempty"` // links a tool result to its call
-	Name               string     `json:"name,omitempty"`         // tool message: tool name
+	ReasoningSignature string           `json:"reasoning_signature,omitempty"`
+	ToolCalls          []ToolCall       `json:"tool_calls,omitempty"`      // set by assistant
+	ToolCallID         string           `json:"tool_call_id,omitempty"`    // links a tool result to its call
+	Name               string           `json:"name,omitempty"`            // tool message: tool name
+	MemoryCitations    []MemoryCitation `json:"memoryCitations,omitempty"` // local UI metadata; provider requests ignore it
+	WorkDurationMs     int64            `json:"workDurationMs,omitempty"`  // local UI metadata; provider requests ignore it
+	Edited             bool             `json:"edited,omitempty"`          // local UI metadata; provider requests ignore it
+	Original           string           `json:"original,omitempty"`        // user prompt before inline edit
+}
+
+// MemoryCitation is local display metadata for memories that influenced an
+// assistant turn. Provider implementations must not forward it to model APIs.
+type MemoryCitation struct {
+	ID        string `json:"id,omitempty"`
+	Source    string `json:"source"`
+	LineStart int    `json:"lineStart,omitempty"`
+	LineEnd   int    `json:"lineEnd,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 }
 
 // ParseImageDataURL splits a `data:<media-type>;base64,<payload>` URL into its
@@ -83,8 +98,22 @@ type ToolSchema struct {
 type Request struct {
 	Messages    []Message
 	Tools       []ToolSchema
-	Temperature float64
+	Temperature *float64 // nil = omit; non-nil = send the value, including 0
 	MaxTokens   int
+}
+
+// TemperaturePtr wraps v in a pointer so callers that explicitly want a
+// specific temperature, including 0 for deterministic output, can distinguish
+// that intent from "not set, use the provider default".
+func TemperaturePtr(v float64) *float64 { return &v }
+
+// OptionalTemperature returns nil when v is zero, matching the historical
+// config behavior where 0 meant "not configured", and a pointer otherwise.
+func OptionalTemperature(v float64) *float64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
 }
 
 // interruptedToolResult stands in for a tool result that never landed — an
@@ -213,6 +242,9 @@ func toolTurnWellFormed(calls []ToolCall, results []Message) bool {
 		if results[k].ToolCallID != tc.ID {
 			return false
 		}
+		if results[k].Name != tc.Name {
+			return false
+		}
 	}
 	return true
 }
@@ -322,6 +354,7 @@ func pairToolResults(calls []ToolCall, avail []Message) []Message {
 		}
 		for _, tc := range calls {
 			if r, ok := byID[tc.ID]; ok {
+				r.Name = tc.Name
 				out = append(out, r)
 			} else {
 				out = append(out, Message{Role: RoleTool, ToolCallID: tc.ID, Name: tc.Name, Content: interruptedToolResult})
@@ -333,6 +366,7 @@ func pairToolResults(calls []ToolCall, avail []Message) []Message {
 		if k < len(avail) {
 			r := avail[k]
 			r.ToolCallID = tc.ID
+			r.Name = tc.Name
 			out = append(out, r)
 		} else {
 			out = append(out, Message{Role: RoleTool, ToolCallID: tc.ID, Name: tc.Name, Content: interruptedToolResult})
@@ -582,6 +616,50 @@ type Provider interface {
 	// Cancelling ctx must abort the underlying request; a closed channel marks
 	// the end of the completion.
 	Stream(ctx context.Context, req Request) (<-chan Chunk, error)
+}
+
+// ToolCallReasoningPolicy is optionally implemented by providers whose protocol
+// replays the provider-issued reasoning block on assistant tool_calls turns
+// (DeepSeek thinking mode). The agent uses it to archive the original reasoning
+// text on those turns (a display-translated copy must not round-trip to the
+// API) and to warn when a turn arrives with none — the request still succeeds
+// because the wire layer always emits the reasoning_content key for such turns,
+// but the model loses its chain-of-thought context. Most providers leave this
+// unset; callers must treat it as false.
+type ToolCallReasoningPolicy interface {
+	RequiresToolCallReasoning() bool
+}
+
+// RequiresToolCallReasoning reports whether p replays reasoning_content on
+// assistant tool_calls turns sent back in history.
+func RequiresToolCallReasoning(p Provider) bool {
+	if nilutil.IsNil(p) {
+		return false
+	}
+	policy, ok := p.(ToolCallReasoningPolicy)
+	return ok && policy.RequiresToolCallReasoning()
+}
+
+// MissingToolCallReasoningWarningPolicy is optionally implemented by providers
+// whose replay protocol requires reasoning_content, but whose active model may
+// not reliably emit it. Request serialization should stay conservative while
+// user-visible diagnostics can be quieter for models where missing reasoning is
+// expected behavior.
+type MissingToolCallReasoningWarningPolicy interface {
+	WarnOnMissingToolCallReasoning() bool
+}
+
+// WarnOnMissingToolCallReasoning reports whether a tool_calls turn with empty
+// reasoning_content should surface a visible warning.
+func WarnOnMissingToolCallReasoning(p Provider) bool {
+	if nilutil.IsNil(p) {
+		return false
+	}
+	policy, ok := p.(MissingToolCallReasoningWarningPolicy)
+	if ok {
+		return policy.WarnOnMissingToolCallReasoning()
+	}
+	return RequiresToolCallReasoning(p)
 }
 
 // Config is a resolved provider instance configuration.

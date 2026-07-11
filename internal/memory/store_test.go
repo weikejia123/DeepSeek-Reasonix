@@ -3,8 +3,11 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 // TestStoreSaveAndIndex covers the round-trip: Save writes a frontmatter file,
@@ -44,6 +47,31 @@ func TestStoreSaveAndIndex(t *testing.T) {
 	}
 }
 
+func TestStoreListDecodesGB18030MemoryFile(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `---
+title: 中文偏好
+description: 使用中文回答
+type: user
+---
+用户希望默认使用中文。`
+	if err := os.WriteFile(filepath.Join(s.Dir, "cn-pref.md"), fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	memories := s.List()
+	if len(memories) != 1 {
+		t.Fatalf("List() = %+v, want one decoded memory", memories)
+	}
+	m := memories[0]
+	if m.Title != "中文偏好" || m.Description != "使用中文回答" || !strings.Contains(m.Body, "默认使用中文") {
+		t.Fatalf("decoded memory = %+v", m)
+	}
+}
+
 // TestStoreOverwriteDoesNotDuplicateIndex verifies re-saving the same name
 // replaces its index line rather than appending a second.
 func TestStoreOverwriteDoesNotDuplicateIndex(t *testing.T) {
@@ -69,12 +97,32 @@ func TestStoreIndexPreservesHandEdits(t *testing.T) {
 	if _, err := s.Save(Memory{Name: "alpha", Description: "first", Type: TypeProject, Body: "x"}); err != nil {
 		t.Fatal(err)
 	}
+	indexPath := filepath.Join(s.Dir, indexFile)
+	handEdited := "# Memory\n\nUser note before managed lines.\n\n" + mustReadString(t, indexPath) + "\nSee [design](design.md) for context.\n"
+	if err := os.WriteFile(indexPath, []byte(handEdited), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Save(Memory{Name: "beta", Description: "second", Type: TypeProject, Body: "y"}); err != nil {
 		t.Fatal(err)
 	}
-	idx := s.Index()
-	if !strings.Contains(idx, "alpha.md") || !strings.Contains(idx, "beta.md") {
-		t.Fatalf("an entry was lost on the second save:\n%s", idx)
+	raw := mustReadString(t, indexPath)
+	for _, want := range []string{"User note before managed lines.", "See [design](design.md) for context.", "alpha.md", "beta.md"} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("MEMORY.md lost %q:\n%s", want, raw)
+		}
+	}
+	if strings.Count(raw, "alpha.md") != 1 || strings.Count(raw, "beta.md") != 1 {
+		t.Fatalf("managed lines were duplicated:\n%s", raw)
+	}
+	if err := s.Delete("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	raw = mustReadString(t, indexPath)
+	if strings.Contains(raw, "alpha.md") {
+		t.Fatalf("deleted managed line remained:\n%s", raw)
+	}
+	if !strings.Contains(raw, "See [design](design.md) for context.") {
+		t.Fatalf("ordinary markdown link was treated as managed:\n%s", raw)
 	}
 }
 
@@ -268,6 +316,15 @@ func TestStoreArchiveFlushesStaleIndexWithoutFile(t *testing.T) {
 	}
 }
 
+func mustReadString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func TestStoreListArchivedNewestFirst(t *testing.T) {
 	s := Store{Dir: t.TempDir()}
 	dir := filepath.Join(s.Dir, ".archive")
@@ -327,7 +384,13 @@ func TestStoreForSlug(t *testing.T) {
 	if strings.Count(filepath.Base(filepath.Dir(s.Dir)), "/") != 0 {
 		t.Fatalf("slug should have no separators: %s", s.Dir)
 	}
-	if !strings.Contains(s.Dir, "-Users-me-proj") {
+	// config.WorkspaceSlug folds case on Windows (equivalent spellings of one
+	// folder must share a slug); unix slugs keep the original case.
+	want := "-Users-me-proj"
+	if runtime.GOOS == "windows" {
+		want = "-users-me-proj"
+	}
+	if !strings.Contains(s.Dir, want) {
 		t.Fatalf("unexpected slug: %s", s.Dir)
 	}
 }

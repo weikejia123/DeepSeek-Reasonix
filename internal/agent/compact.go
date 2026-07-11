@@ -22,16 +22,17 @@ import (
 // fraction of the window, so a huge window still compacts rarely while a small
 // one still lands below the trigger (which is what stops the re-compaction loop).
 const (
-	defaultSoftCompactRatio   = 0.5   // report growing context here, but keep the cache-stable prefix intact
-	defaultCompactRatio       = 0.8   // trigger: prompt at this fraction of the window compacts
-	defaultCompactForceRatio  = 0.9   // force compaction at this high-water mark even for low-value folds
-	defaultCompactTarget      = 0.5   // safety cap: the kept tail never exceeds this fraction of the window
-	defaultTailTokens         = 16384 // verbatim recent-tail budget, in tokens
-	minRecentKeep             = 2     // never keep fewer recent messages than this
-	minCompactMessages        = 2     // skip compaction below this many compactable messages
-	fallbackTokPerChar        = 0.25  // ~4 chars/token, used before any usage is available to calibrate
-	maxPinnedFirstUserTokens  = 1500  // ceiling on pinning the first user turn verbatim; larger first turns (pasted content) stay foldable
-	pinnedFirstUserWindowFrac = 0.15  // and never pin a first turn worth more than this fraction of the window
+	defaultSoftCompactRatio    = 0.5   // report growing context here, but keep the cache-stable prefix intact
+	defaultToolResultSnipRatio = 0.6   // rewrite stale tool results cheaply before summary compaction
+	defaultCompactRatio        = 0.8   // trigger: prompt at this fraction of the window compacts
+	defaultCompactForceRatio   = 0.9   // force compaction at this high-water mark even for low-value folds
+	defaultCompactTarget       = 0.5   // safety cap: the kept tail never exceeds this fraction of the window
+	defaultTailTokens          = 16384 // verbatim recent-tail budget, in tokens
+	minRecentKeep              = 2     // never keep fewer recent messages than this
+	minCompactMessages         = 2     // skip compaction below this many compactable messages
+	fallbackTokPerChar         = 0.25  // ~4 chars/token, used before any usage is available to calibrate
+	maxPinnedFirstUserTokens   = 1500  // ceiling on pinning the first user turn verbatim; larger first turns (pasted content) stay foldable
+	pinnedFirstUserWindowFrac  = 0.15  // and never pin a first turn worth more than this fraction of the window
 )
 
 // summaryTag wraps the compaction summary so the model can distinguish it from
@@ -86,12 +87,23 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 		return
 	}
 	high := int(float64(a.contextWindow) * a.compactRatio)
+	snip := int(float64(a.contextWindow) * a.toolResultSnipRatio)
 	soft := int(float64(a.contextWindow) * a.softCompactRatio)
 	// Between the soft ratio and the trigger, report growing context once without
 	// rewriting the prefix — a compaction here would needlessly crater the cache.
-	if u.PromptTokens >= soft && u.PromptTokens < high && !a.softCompactNoticed {
+	if u.PromptTokens >= soft && u.PromptTokens < snip && !a.softCompactNoticed {
 		a.softCompactNoticed = true
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("context reached %.0f%% of window; keeping cache-first prefix until compact threshold %.0f%%", a.softCompactRatio*100, a.compactRatio*100)})
+		detail := fmt.Sprintf("context reached %.0f%% of window; keeping cache-first prefix until compact threshold %.0f%%", a.softCompactRatio*100, a.compactRatio*100)
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Context is getting large; preserving cache until cleanup is needed.", Detail: detail})
+		return
+	}
+	if u.PromptTokens >= snip && u.PromptTokens < high {
+		ratio := a.tokPerChar()
+		if st, err := a.SnipStaleToolResults(); err == nil && st.Results > 0 {
+			saved := int(float64(st.SavedChars) * ratio)
+			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
+				"snipped %d stale tool results (~%d tokens est.) before compaction", st.Results, saved)})
+		}
 		return
 	}
 	if u.PromptTokens < high {
@@ -117,7 +129,7 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 		}
 	}
 	if err := a.compact(ctx, "auto", "", force); err != nil {
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("compaction skipped: %v", err)})
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Context cleanup skipped for now.", Detail: fmt.Sprintf("compaction skipped: %v", err)})
 		return
 	}
 	// A healthy compaction drops the prompt under the trigger, so the next turn
@@ -128,7 +140,7 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 	a.consecutiveCompacts++
 	if a.consecutiveCompacts >= 2 {
 		a.compactStuck = true
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: fmt.Sprintf(
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Automatic context cleanup paused because the context window is too small.", Detail: fmt.Sprintf(
 			"context_window=%d is too small for compaction to help (the system prompt plus one turn already exceeds %.0f%% of it); raise context_window or shrink tool output. Auto-compaction paused until the prompt drops.",
 			a.contextWindow, a.compactRatio*100)})
 	}
@@ -247,7 +259,7 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 		// deterministic marker rather than aborting. /compact then always frees
 		// context (and auto-compaction can't loop on a still-full window); the
 		// verbatim user turns kept above are untouched.
-		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "compaction summary unavailable (" + err.Error() + "); folded mechanically"})
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "Context was compacted without a generated summary.", Detail: "compaction summary unavailable (" + err.Error() + "); folded mechanically"})
 		summary = mechanicalFoldDigest(len(fold), archived)
 	}
 
@@ -303,6 +315,7 @@ func (a *Agent) SummarizeFrom(ctx context.Context, fromIdx int) error {
 		Content: "Summary of the later conversation (compacted from here on):\n" + summary,
 	})
 	a.session.Replace(next)
+	a.session.IncrementRewrite()
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("summarized %d later messages → summary", len(region))})
 	return nil
@@ -336,10 +349,17 @@ func (a *Agent) SummarizeUpTo(ctx context.Context, toIdx int) error {
 	})
 	next = append(next, msgs[toIdx:]...)
 	a.session.Replace(next)
+	a.session.IncrementRewrite()
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("summarized %d earlier messages → summary", len(region))})
 	return nil
 }
+
+// IsCompactionSummary reports whether m is a rolling digest inserted by a
+// prior compaction fold. Exported for session owners outside this package
+// (e.g. the guardian) whose turn rollback must not treat a digest as a
+// disposable user message.
+func IsCompactionSummary(m provider.Message) bool { return isCompactionSummary(m) }
 
 // isCompactionSummary reports whether m is a rolling summary from a prior fold.
 func isCompactionSummary(m provider.Message) bool {
@@ -610,7 +630,7 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 			{Role: provider.RoleSystem, Content: sys},
 			{Role: provider.RoleUser, Content: renderTranscript(region)},
 		},
-		Temperature: a.temperature,
+		Temperature: provider.OptionalTemperature(a.temperature),
 	})
 	if err != nil {
 		return "", err

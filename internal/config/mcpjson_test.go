@@ -1,10 +1,14 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 func TestLoadMCPJSON(t *testing.T) {
@@ -47,6 +51,177 @@ func TestLoadMCPJSON(t *testing.T) {
 	}
 }
 
+func TestLoadMCPJSONDecodesGB18030(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, mcpJSONFile)
+	doc := `{"mcpServers":{"local":{"command":"工具.exe","env":{"LABEL":"中文"}}}}`
+	if err := os.WriteFile(path, fileencoding.Encode(doc, fileencoding.GB18030), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadMCPJSON(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Command != "工具.exe" || got[0].Env["LABEL"] != "中文" {
+		t.Fatalf("decoded .mcp.json entries = %+v", got)
+	}
+}
+
+func TestMCPJSONTrustedReadOnlyToolsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, mcpJSONFile)
+	if _, err := UpsertMCPJSONPlugin(path, PluginEntry{
+		Name:                 "github",
+		Command:              "npx",
+		Args:                 []string{"-y", "@modelcontextprotocol/server-github"},
+		TrustedReadOnlyTools: []string{"issue_read", "pull_request_read"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadMCPJSON(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries = %+v, want one github entry", got)
+	}
+	tools := got[0].TrustedReadOnlyTools
+	if len(tools) != 2 || tools[0] != "issue_read" || tools[1] != "pull_request_read" {
+		t.Fatalf("trusted read-only tools = %+v", tools)
+	}
+}
+
+func TestMCPJSONCallTimeoutsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, mcpJSONFile)
+	if err := os.WriteFile(path, []byte(`{
+  "mcpServers": {
+    "maker": {
+      "command": "old-maker",
+      "unknown_field": true
+    }
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpsertMCPJSONPlugin(path, PluginEntry{
+		Name:               "maker",
+		Command:            "maker-mcp",
+		CallTimeoutSeconds: 600,
+		ToolTimeoutSeconds: map[string]int{
+			"generate/video": 1800,
+			"search":         120,
+			"ignored_zero":   0,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadMCPJSON(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("entries = %+v, want one maker entry", got)
+	}
+	if got[0].CallTimeoutSeconds != 600 {
+		t.Fatalf("call_timeout_seconds = %d, want 600", got[0].CallTimeoutSeconds)
+	}
+	if got[0].ToolTimeoutSeconds["generate/video"] != 1800 || got[0].ToolTimeoutSeconds["search"] != 120 {
+		t.Fatalf("tool_timeout_seconds = %+v, want generate/video=1800 search=120", got[0].ToolTimeoutSeconds)
+	}
+	if _, ok := got[0].ToolTimeoutSeconds["ignored_zero"]; ok {
+		t.Fatalf("zero timeout should not be written: %+v", got[0].ToolTimeoutSeconds)
+	}
+
+	root, servers, err := readMCPJSONRaw(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root) == 0 || len(servers) != 1 {
+		t.Fatalf("raw root/servers = %+v/%+v", root, servers)
+	}
+	var server map[string]any
+	if err := json.Unmarshal(servers["maker"], &server); err != nil {
+		t.Fatal(err)
+	}
+	if server["unknown_field"] != true {
+		t.Fatalf("unknown per-server field was not preserved: %+v", server)
+	}
+}
+
+func TestTrustPluginReadOnlyToolInSourceForRootUpdatesProjectTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	root := t.TempDir()
+	projectTOML := filepath.Join(root, "reasonix.toml")
+	if err := os.WriteFile(projectTOML, []byte(`[[plugins]]
+name = "github"
+command = "github-mcp"
+trusted_read_only_tools = ["issue_read"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, changed, source, err := TrustPluginReadOnlyToolInSourceForRoot(root, "github", " pull_request_read ")
+	if err != nil {
+		t.Fatalf("TrustPluginReadOnlyToolInSourceForRoot: %v", err)
+	}
+	if !changed || source != projectTOML {
+		t.Fatalf("changed/source = %v/%q, want true/%q", changed, source, projectTOML)
+	}
+	if got := strings.Join(updated.TrustedReadOnlyTools, ","); got != "issue_read,pull_request_read" {
+		t.Fatalf("updated trusted tools = %q", got)
+	}
+	cfg := LoadForEdit(projectTOML)
+	if got := strings.Join(cfg.Plugins[0].TrustedReadOnlyTools, ","); got != "issue_read,pull_request_read" {
+		t.Fatalf("saved trusted tools = %q", got)
+	}
+
+	_, changed, _, err = TrustPluginReadOnlyToolInSourceForRoot(root, "github", "pull_request_read")
+	if err != nil {
+		t.Fatalf("second TrustPluginReadOnlyToolInSourceForRoot: %v", err)
+	}
+	if changed {
+		t.Fatal("trusting an already trusted tool should report unchanged")
+	}
+}
+
+func TestTrustPluginReadOnlyToolInSourceForRootUpdatesMCPJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	root := t.TempDir()
+	path := filepath.Join(root, mcpJSONFile)
+	if _, err := UpsertMCPJSONPlugin(path, PluginEntry{Name: "github", Command: "github-mcp"}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, changed, source, err := TrustPluginReadOnlyToolInSourceForRoot(root, "github", "issue_read")
+	if err != nil {
+		t.Fatalf("TrustPluginReadOnlyToolInSourceForRoot: %v", err)
+	}
+	if !changed || source != path {
+		t.Fatalf("changed/source = %v/%q, want true/%q", changed, source, path)
+	}
+	if got := strings.Join(updated.TrustedReadOnlyTools, ","); got != "issue_read" {
+		t.Fatalf("updated trusted tools = %q", got)
+	}
+	entries, err := loadMCPJSON(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(entries[0].TrustedReadOnlyTools, ","); got != "issue_read" {
+		t.Fatalf(".mcp.json trusted tools = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "reasonix.toml")); !os.IsNotExist(err) {
+		t.Fatalf("project TOML should not be created for .mcp.json-owned server, stat err=%v", err)
+	}
+}
+
 func TestNormalizePluginCommandLine(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -82,6 +257,19 @@ func TestNormalizePluginCommandLine(t *testing.T) {
 			wantCommand: "npx",
 			wantArgs:    []string{"--token", "", "@example/mcp"},
 			wantChanged: true,
+		},
+		{
+			name:        "quoted arg with spaces preserved",
+			in:          PluginEntry{Name: "quoted-arg", Command: `npx --label "My Server" @example/mcp`},
+			wantCommand: "npx",
+			wantArgs:    []string{"--label", "My Server", "@example/mcp"},
+			wantChanged: true,
+		},
+		{
+			name:        "shell control syntax untouched",
+			in:          PluginEntry{Name: "control", Command: `npx @example/mcp && rm -rf tmp`},
+			wantCommand: "npx @example/mcp && rm -rf tmp",
+			wantChanged: false,
 		},
 		{
 			name:        "unquoted command path with spaces stays literal",
@@ -496,5 +684,116 @@ func TestLoadLegacyMCP(t *testing.T) {
 	}
 	if got := loadLegacyMCP(""); got != nil {
 		t.Errorf("empty path: got %+v, want nil", got)
+	}
+}
+
+func TestRemovePluginFromSourcesForRootRemovesEveryWritableDeclaration(t *testing.T) {
+	_, userConfig, _ := legacyHome(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(userConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{userConfig, filepath.Join(root, "reasonix.toml")} {
+		if err := os.WriteFile(path, []byte(`
+[[plugins]]
+name = "duplicate"
+command = "duplicate-mcp"
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mcpPath := filepath.Join(root, mcpJSONFile)
+	if err := os.WriteFile(mcpPath, []byte(`{
+  "mcpServers": {
+    "duplicate": { "command": "duplicate-json" },
+    "keep": { "command": "keep-json" }
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := RemovePluginFromSourcesForRoot(root, "duplicate")
+	if err != nil {
+		t.Fatalf("RemovePluginFromSourcesForRoot: %v", err)
+	}
+	if !removed {
+		t.Fatal("RemovePluginFromSourcesForRoot reported no removal")
+	}
+	for _, path := range []string{userConfig, filepath.Join(root, "reasonix.toml")} {
+		for _, p := range LoadForEdit(path).Plugins {
+			if p.Name == "duplicate" {
+				t.Fatalf("duplicate MCP survived in %s: %+v", path, p)
+			}
+		}
+	}
+	if _, found, err := LoadMCPJSONPlugin(mcpPath, "duplicate"); err != nil || found {
+		t.Fatalf("duplicate .mcp.json entry survived: found=%v err=%v", found, err)
+	}
+	if _, found, err := LoadMCPJSONPlugin(mcpPath, "keep"); err != nil || !found {
+		t.Fatalf("unrelated .mcp.json entry was lost: found=%v err=%v", found, err)
+	}
+}
+
+func TestRemovePluginFromSourcesForRootPreflightsEverySource(t *testing.T) {
+	_, userConfig, _ := legacyHome(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(userConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const original = `[[plugins]]
+name = "duplicate"
+command = "duplicate-mcp"
+`
+	if err := os.WriteFile(userConfig, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, mcpJSONFile), []byte(`{"mcpServers":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if removed, err := RemovePluginFromSourcesForRoot(root, "duplicate"); err == nil || removed {
+		t.Fatalf("RemovePluginFromSourcesForRoot = (%v, %v), want false and malformed .mcp.json error", removed, err)
+	}
+	got, err := os.ReadFile(userConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("user config changed before every source was validated:\n%s", got)
+	}
+}
+
+func TestApplyConfigSourceEditsRollsBackEarlierWrites(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.toml")
+	second := filepath.Join(dir, "second.toml")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstEdit, err := newConfigSourceEdit(first, func() error {
+		return os.WriteFile(first, []byte("after\n"), 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEdit, err := newConfigSourceEdit(second, func() error {
+		return errors.New("publish failed")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyConfigSourceEdits([]configSourceEdit{firstEdit, secondEdit}); err == nil {
+		t.Fatal("applyConfigSourceEdits unexpectedly succeeded")
+	}
+	for _, path := range []string{first, second} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "before\n" {
+			t.Fatalf("%s was not rolled back: %q", path, got)
+		}
 	}
 }

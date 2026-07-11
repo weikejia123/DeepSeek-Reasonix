@@ -29,6 +29,35 @@ func TestLedgerRecordsSuccessAndFailureReceipts(t *testing.T) {
 	}
 }
 
+func TestLedgerHasWriteOrCommandSince(t *testing.T) {
+	ledger := NewLedger()
+	ledger.Record(Receipt{ToolName: "todo_write", Success: true, Todos: []TodoItem{{Content: "edit", Status: "in_progress"}}})
+	ledger.Record(Receipt{ToolName: "write_file", Success: true, Write: true, Paths: []string{"a.go"}})
+	ledger.Record(Receipt{ToolName: "bash", Success: false, Command: "go test ./..."})
+	ledger.Record(Receipt{ToolName: "complete_step", Success: true, Step: "edit"})
+
+	if got := ledger.Len(); got != 4 {
+		t.Fatalf("Len() = %d, want 4", got)
+	}
+	if !ledger.HasWriteOrCommandSince(0) {
+		t.Fatal("write receipt at index 1 should count from index 0")
+	}
+	if !ledger.HasWriteOrCommandSince(-1) {
+		t.Fatal("negative index should behave like 0")
+	}
+	if ledger.HasWriteOrCommandSince(2) {
+		t.Fatal("failed command and bookkeeping receipts must not count as progress")
+	}
+	ledger.Record(Receipt{ToolName: "bash", Success: true, Command: "go test ./..."})
+	if !ledger.HasWriteOrCommandSince(2) {
+		t.Fatal("successful command receipt after index should count as progress")
+	}
+	var nilLedger *Ledger
+	if nilLedger.HasWriteOrCommandSince(0) {
+		t.Fatal("nil ledger must report no progress")
+	}
+}
+
 func TestLedgerMatchesFileReadAndWriteReceipts(t *testing.T) {
 	ledger := NewLedger()
 	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`internal/tool/builtin/completestep.go`}, Read: true})
@@ -43,6 +72,31 @@ func TestLedgerMatchesFileReadAndWriteReceipts(t *testing.T) {
 	}
 	if ledger.HasSuccessfulWrite([]string{`failed.go`}) {
 		t.Fatal("failed write receipt must not verify")
+	}
+}
+
+func TestLedgerReportsAnchorRefreshReadsAfterWrites(t *testing.T) {
+	ledger := NewLedger()
+	ledger.Record(Receipt{ToolName: "write_file", Success: true, Paths: []string{`src\a.go`}, Write: true})
+	writeIndex, ok := ledger.LatestSuccessfulWriteIndex([]string{`src/a.go`})
+	if !ok {
+		t.Fatal("expected latest write index")
+	}
+	if ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
+		t.Fatal("read-after-write should be false before a read")
+	}
+
+	ledger.Record(Receipt{ToolName: "grep", Success: true, Paths: []string{`src/a.go`}, Read: true, Args: json.RawMessage(`{"path":"src/a.go","pattern":"func"}`)})
+	if ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
+		t.Fatal("grep should not refresh anchor edit state")
+	}
+	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`src/a.go`}, Read: true, Args: json.RawMessage(`{"path":"src/a.go","offset":100,"limit":20}`)})
+	if ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
+		t.Fatal("windowed read_file should not refresh anchor edit state")
+	}
+	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`src/a.go`}, Read: true, Args: json.RawMessage(`{"path":"src/a.go"}`)})
+	if !ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
+		t.Fatal("read-after-write should be true after a successful read")
 	}
 }
 
@@ -156,8 +210,52 @@ func TestReceiptFromToolCallExtractsCompleteStep(t *testing.T) {
 	if receipt.Step != "Add parser" {
 		t.Fatalf("complete_step step = %q", receipt.Step)
 	}
+	if !receipt.StepProof {
+		t.Fatalf("complete_step evidence proof not extracted: %+v", receipt)
+	}
 	if receipt.Read {
 		t.Fatalf("complete_step should not be treated as read-only context: %+v", receipt)
+	}
+
+	missingResult := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step":"Add parser",
+		"evidence":[{"kind":"manual","summary":"checked manually"}]
+	}`), false, true)
+	if missingResult.StepProof {
+		t.Fatalf("complete_step without result should not count as proof: %+v", missingResult)
+	}
+
+	missingCommand := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step":"Add parser",
+		"result":"parser added",
+		"evidence":[{"kind":"verification","summary":"checked manually"}]
+	}`), false, true)
+	if missingCommand.StepProof {
+		t.Fatalf("verification evidence without command should not count as proof: %+v", missingCommand)
+	}
+
+	emptyProof := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step":"Add parser",
+		"result":"parser added",
+		"evidence":[]
+	}`), false, true)
+	if emptyProof.StepProof {
+		t.Fatalf("empty complete_step evidence should not count as proof: %+v", emptyProof)
+	}
+}
+
+func TestReceiptFromToolCallExtractsCompleteStepIndex(t *testing.T) {
+	receipt := ReceiptFromToolCall("complete_step", json.RawMessage(`{
+		"step_index":2,
+		"result":"done",
+		"evidence":[{"kind":"manual","summary":"checked"}]
+	}`), true, true)
+
+	if receipt.Step != "2" {
+		t.Fatalf("step index not extracted as step identity: %+v", receipt)
+	}
+	if !receipt.StepProof {
+		t.Fatalf("step proof not detected: %+v", receipt)
 	}
 }
 
@@ -287,7 +385,7 @@ func TestLedgerRequiresCompleteStepForNewCompletedTodos(t *testing.T) {
 		t.Fatal("expected prior todo_write baseline after failed complete_step")
 	}
 	if len(missing) != 1 || missing[0].Content != "Add parser" {
-		t.Fatalf("failed complete_step should not authorize completion, missing = %+v", missing)
+		t.Fatalf("failed complete_step without proof-bearing recovery should not authorize completion, missing = %+v", missing)
 	}
 
 	ledger.Record(Receipt{ToolName: "complete_step", Success: true, Step: "Add parser"})

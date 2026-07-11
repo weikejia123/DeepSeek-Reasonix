@@ -47,7 +47,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("# Reasonix configuration.\n")
 	fmt.Fprintf(&b, "# Resolution order: flag > ./reasonix.toml > %s > built-in defaults.\n", userConfigDisplayPath())
 	b.WriteString("# Fields marked user/global only are not overridden by ./reasonix.toml.\n")
-	b.WriteString("# Secrets come from the environment via api_key_env; never put keys here.\n\n")
+	b.WriteString("# Secrets are named via api_key_env and stored in Reasonix's global .env; never put keys here.\n\n")
 
 	fmt.Fprintf(&b, "config_version = %d   # schema marker for diagnostics; old versions may ignore it\n", configVersion(c))
 	fmt.Fprintf(&b, "default_model = %q\n", c.DefaultModel)
@@ -57,7 +57,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# language      = \"zh\"   # ui/model language; empty = auto-detect from $LANG / $REASONIX_LANG\n")
 	}
 	if scope != RenderScopeProject {
-		fmt.Fprintf(&b, "credentials_store = %q   # auto|keyring|file; auto prefers the OS keychain and falls back to ~/.reasonix/credentials\n", normalizeCredentialsStore(c.CredentialsStore))
+		fmt.Fprintf(&b, "credentials_store = %q   # legacy compatibility; provider keys are saved in Reasonix's global .env\n", normalizeCredentialsStore(c.CredentialsStore))
 	}
 	b.WriteString("\n")
 
@@ -73,6 +73,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "shortcut_layout = %q   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO\n", layout)
 		} else {
 			b.WriteString("# shortcut_layout = \"desktop\"   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO\n")
+		}
+		if strings.TrimSpace(c.UI.CursorShape) != "" {
+			fmt.Fprintf(&b, "cursor_shape = %q   # block|underline|bar; text input cursor shape\n", c.UICursorShape())
+		} else {
+			b.WriteString("# cursor_shape = \"underline\"   # block|underline|bar; text input cursor shape\n")
 		}
 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
@@ -102,6 +107,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "close_behavior = %q   # desktop: quit|background when the window close button is clicked\n", c.DesktopCloseBehavior())
 		fmt.Fprintf(&b, "status_bar_style = %q   # desktop: icon|text metric labels in the bottom status bar\n", c.DesktopStatusBarStyle())
 		fmt.Fprintf(&b, "status_bar_items = %s   # desktop: ordered visible bottom status bar items\n", renderStringArray(c.DesktopStatusBarItems()))
+		fmt.Fprintf(&b, "default_tool_approval_mode = %q   # desktop: Ask/Auto/YOLO default for newly-created sessions\n", c.DesktopDefaultToolApprovalMode())
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
 		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping (install id + version + OS); never content\n", c.DesktopTelemetry())
 		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate desktop metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
@@ -113,7 +119,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("\n")
 
 		b.WriteString("[notifications]\n")
-		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI chat/run; default off\n", c.Notifications.Enabled)
+		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI and desktop turns; default off\n", c.Notifications.Enabled)
 		fmt.Fprintf(&b, "turn_done = %v   # notify when a turn finishes\n", c.Notifications.TurnDone)
 		fmt.Fprintf(&b, "approval_request = %v   # notify when a tool approval is waiting\n", c.Notifications.ApprovalRequest)
 		fmt.Fprintf(&b, "ask_request = %v   # notify when a question is waiting\n", c.Notifications.AskRequest)
@@ -161,6 +167,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		b.WriteString("\n")
 	}
+	if shouldRenderEnvironment(c, defaults, scope) {
+		renderEnvironmentConfig(&b, c.Environment)
+	}
 
 	b.WriteString("[agent]\n")
 	if shouldRenderSystemPrompt(c, defaults, scope) {
@@ -197,6 +206,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			autoPlan = "off"
 		}
 		fmt.Fprintf(&b, "auto_plan   = %q   # user-level only: off|on; off keeps plan mode manual\n", autoPlan)
+		fmt.Fprintf(&b, "memory_compiler = { enabled = %v, verbosity = %q }   # user-level only: observe|compact\n", c.MemoryCompilerEnabled(), c.MemoryCompilerVerbosity())
 	}
 	if lang := c.ReasoningLanguage(); lang != "auto" {
 		fmt.Fprintf(&b, "reasoning_language = %q   # visible reasoning language: auto|zh|en\n", lang)
@@ -209,6 +219,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# auto_plan_classifier = \"deepseek-flash\"   # optional; only used for borderline tasks\n")
 	}
 	fmt.Fprintf(&b, "soft_compact_ratio  = %s   # notice only; keeps cache-first prefix intact\n", formatFloat(c.Agent.SoftCompactRatio))
+	fmt.Fprintf(&b, "tool_result_snip_ratio = %s   # snip stale tool results at this fraction before summary compaction\n", formatFloat(c.Agent.ToolResultSnipRatio))
 	fmt.Fprintf(&b, "compact_ratio       = %s   # try compacting when prompt reaches this fraction\n", formatFloat(c.Agent.CompactRatio))
 	fmt.Fprintf(&b, "compact_force_ratio = %s   # force compacting at this high-water mark\n", formatFloat(c.Agent.CompactForceRatio))
 	if c.Agent.Keep != nil {
@@ -222,6 +233,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# recent_keep         = 2   # minimum recent messages kept verbatim\n")
 	}
 	fmt.Fprintf(&b, "cold_resume_prune   = %v   # elide stale tool results when reopening a session past the provider cache window\n", c.ColdResumePruneEnabled())
+	if len(c.Agent.PlanModeAllowedTools) > 0 {
+		fmt.Fprintf(&b, "plan_mode_allowed_tools = %s   # extra read-only declarations for custom tools; cannot unlock known blocked tools or unsafe bash\n", renderStringArray(c.Agent.PlanModeAllowedTools))
+	} else {
+		b.WriteString("# plan_mode_allowed_tools = [\"custom_reader\"]   # extra read-only declarations; cannot unlock known blocked tools or unsafe bash\n")
+	}
+	if len(c.Agent.PlanModeReadOnlyCommands) > 0 {
+		fmt.Fprintf(&b, "plan_mode_read_only_commands = %s   # concrete read-only shell prefixes available while planning\n", renderStringArray(c.Agent.PlanModeReadOnlyCommands))
+	} else {
+		b.WriteString("# plan_mode_read_only_commands = [\"gh issue view\", \"gh pr diff\"]   # concrete read-only shell prefixes; does not allow shell operators or shell interpreters\n")
+	}
 	if c.Agent.PlannerModel != "" {
 		fmt.Fprintf(&b, "planner_model = %q   # low-frequency planner (two-model collaboration)\n", c.Agent.PlannerModel)
 	} else {
@@ -247,6 +268,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# subagent_efforts = { review = \"max\", task = \"high\" }   # per-tool/skill effort overrides\n")
 	}
+	if c.Agent.MaxSubagentDepth != defaults.Agent.MaxSubagentDepth {
+		fmt.Fprintf(&b, "max_subagent_depth = %d   # nested subagent delegation depth; 1 restores the old single-layer boundary\n", c.Agent.MaxSubagentDepth)
+	} else {
+		b.WriteString("# max_subagent_depth = 2   # nested subagent delegation depth; set 1 to disable nested delegation\n")
+	}
 	if c.Agent.OutputStyle != "" {
 		fmt.Fprintf(&b, "output_style = %q   # persona/tone folded into the prompt\n", c.Agent.OutputStyle)
 	} else {
@@ -260,6 +286,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "name        = %q\n", p.Name)
 			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
 			fmt.Fprintf(&b, "base_url    = %q\n", p.BaseURL)
+			if p.ChatURL != "" {
+				fmt.Fprintf(&b, "chat_url    = %q   # optional full chat completions URL; disables automatic /chat/completions suffix\n", p.ChatURL)
+			}
 			if len(p.Models) > 0 {
 				fmt.Fprintf(&b, "models      = %s\n", renderStringArray(p.Models))
 				if p.Default != "" {
@@ -272,6 +301,21 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "models_url  = %q   # auto-fetch models from this URL on startup\n", p.ModelsURL)
 			}
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			if p.PresetID != "" {
+				fmt.Fprintf(&b, "preset_id   = %q   # curated preset identity; settings UI uses it to avoid duplicate installs\n", p.PresetID)
+			}
+			if p.PresetVersion > 0 {
+				fmt.Fprintf(&b, "preset_version = %d\n", p.PresetVersion)
+			}
+			if len(p.Headers) > 0 {
+				fmt.Fprintf(&b, "headers     = %s   # extra static request headers; keep secrets in api_key_env\n", renderStringMap(p.Headers))
+			}
+			if len(p.ExtraBody) > 0 {
+				fmt.Fprintf(&b, "extra_body  = %s   # extra top-level JSON request body fields for compatible gateways\n", renderAnyMap(p.ExtraBody))
+			}
+			if p.AuthHeader {
+				b.WriteString("auth_header = true   # Anthropic-compatible: send Authorization: Bearer <api_key> instead of x-api-key\n")
+			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q   # optional; wallet-balance endpoint shown in the status bar\n", p.BalanceURL)
 			}
@@ -308,6 +352,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if p.DefaultEffort != "" {
 				fmt.Fprintf(&b, "default_effort    = %q   # used when /effort is auto or unset; must be one of supported_efforts\n", p.DefaultEffort)
 			}
+			if len(p.ModelOverrides) > 0 {
+				fmt.Fprintf(&b, "model_overrides   = %s   # per-model reasoning/vision overrides for mixed gateways\n", renderModelOverrides(p.ModelOverrides))
+			}
 			if p.NoProxy {
 				b.WriteString("no_proxy    = true   # reach this base_url directly, never via the proxy\n")
 			}
@@ -328,10 +375,23 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		b.WriteString("]\n")
 	}
-	fmt.Fprintf(&b, "bash_timeout_seconds = %d   # foreground safety cap; set 0 for no tool-local cap\n\n", c.BashTimeoutSeconds())
+	fmt.Fprintf(&b, "bash_timeout_seconds = %d   # foreground safety cap; set 0 for no tool-local cap\n", c.BashTimeoutSeconds())
+	fmt.Fprintf(&b, "mcp_call_timeout_seconds = %d   # default MCP call safety cap; per-plugin/tool overrides may raise it\n\n", c.MCPCallTimeoutSeconds())
 
 	b.WriteString("[tools.background_jobs]\n")
 	fmt.Fprintf(&b, "stalled_warning_seconds = %d   # warn once per background job after this many quiet seconds; 0 disables\n\n", c.BackgroundJobStalledWarningSeconds())
+
+	b.WriteString("[tools.shell]\n")
+	if c.Tools.Shell.Prefer != "" {
+		fmt.Fprintf(&b, "prefer = %q   # auto|bash|powershell|pwsh; empty/default = auto-detect\n", c.Tools.Shell.Prefer)
+	} else {
+		b.WriteString("# prefer = \"auto\"   # auto|bash|powershell|pwsh; empty/default = auto-detect\n")
+	}
+	if c.Tools.Shell.Path != "" {
+		fmt.Fprintf(&b, "path   = %q   # absolute path to the shell executable; empty = PATH lookup\n\n", c.Tools.Shell.Path)
+	} else {
+		b.WriteString("# path   = \"/opt/homebrew/bin/bash\"   # absolute path to the shell executable; empty = PATH lookup\n\n")
+	}
 
 	renderLSPConfig(&b, c.LSP)
 
@@ -374,8 +434,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("[sandbox]\n")
 	b.WriteString("# Confine tool blast radius. File-writers (write_file/edit_file/multi_edit/move_file)\n")
 	b.WriteString("# may only write under workspace_root (empty = current dir) and allow_write extras.\n")
-	b.WriteString("# bash = \"enforce\" (default) jails each command in an OS sandbox (macOS now;\n")
-	b.WriteString("# graceful fallback elsewhere); \"off\" disables it. network allows egress.\n")
+	b.WriteString("# bash = \"enforce\" jails each command in an OS sandbox when available;\n")
+	b.WriteString("# without one, bash execution is refused. Empty defaults to enforce on macOS/Linux.\n")
+	b.WriteString("# Windows currently forces bash = \"off\" to restore pre-1.16 unconfined shell execution.\n")
+	b.WriteString("# network allows sandboxed bash egress.\n")
 	if c.Sandbox.WorkspaceRoot != "" {
 		fmt.Fprintf(&b, "workspace_root = %q\n", c.Sandbox.WorkspaceRoot)
 	} else {
@@ -385,6 +447,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "allow_write = %s\n", renderStringArray(c.Sandbox.AllowWrite))
 	} else {
 		b.WriteString("# allow_write = [\"/tmp\"]          # extra dirs writers may also modify\n")
+	}
+	if len(c.Sandbox.ForbidRead) > 0 {
+		fmt.Fprintf(&b, "forbid_read = %s\n", renderStringArray(c.Sandbox.ForbidRead))
+	} else {
+		b.WriteString("# forbid_read = []                  # dirs the agent cannot read or list\n")
 	}
 	fmt.Fprintf(&b, "bash    = %q\n", c.BashMode())
 	fmt.Fprintf(&b, "network = %v\n", c.Sandbox.Network)
@@ -416,12 +483,74 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		fmt.Fprintf(&b, "max_steps = %d\n", c.Bot.MaxSteps)
 		fmt.Fprintf(&b, "debounce_ms = %d\n", c.Bot.DebounceMs)
+		if c.Bot.QueueMode != "" {
+			fmt.Fprintf(&b, "queue_mode = %q   # steer|followup|collect|interrupt\n", c.Bot.QueueMode)
+		} else {
+			b.WriteString("# queue_mode = \"steer\"   # steer|followup|collect|interrupt\n")
+		}
+		if c.Bot.QueueCap > 0 {
+			fmt.Fprintf(&b, "queue_cap = %d\n", c.Bot.QueueCap)
+		} else {
+			b.WriteString("# queue_cap = 20\n")
+		}
+		if c.Bot.QueueDrop != "" {
+			fmt.Fprintf(&b, "queue_drop = %q   # summarize|old|new\n", c.Bot.QueueDrop)
+		} else {
+			b.WriteString("# queue_drop = \"summarize\"   # summarize|old|new\n")
+		}
+		fmt.Fprintf(&b, "ignore_self_messages = %v   # ignore bot echo by returned message_id and configured self user ids\n", c.Bot.IgnoreSelfMessages)
+		b.WriteString("\n[bot.self_user_ids]\n")
+		fmt.Fprintf(&b, "qq = %s\n", renderStringArray(c.Bot.SelfUserIDs.QQ))
+		fmt.Fprintf(&b, "feishu = %s\n", renderStringArray(c.Bot.SelfUserIDs.Feishu))
+		fmt.Fprintf(&b, "weixin = %s\n", renderStringArray(c.Bot.SelfUserIDs.Weixin))
+		b.WriteString("\n[bot.control]\n")
+		fmt.Fprintf(&b, "enabled = %v   # local loopback HTTP API for status/send; requires Bearer token\n", c.Bot.Control.Enabled)
+		if strings.TrimSpace(c.Bot.Control.Addr) != "" {
+			fmt.Fprintf(&b, "addr = %q\n", c.Bot.Control.Addr)
+		} else {
+			b.WriteString("# addr = \"127.0.0.1:37913\"\n")
+		}
+		if strings.TrimSpace(c.Bot.Control.TokenEnv) != "" {
+			fmt.Fprintf(&b, "token_env = %q\n", c.Bot.Control.TokenEnv)
+		} else {
+			b.WriteString("# token_env = \"REASONIX_BOT_CONTROL_TOKEN\"\n")
+		}
+		if len(c.Bot.Routes) > 0 {
+			for _, route := range c.Bot.Routes {
+				b.WriteString("\n[[bot.routes]]\n")
+				renderBotRoute(&b, route)
+			}
+		}
+		if len(c.Bot.DesktopWatchers) > 0 {
+			for _, watcher := range c.Bot.DesktopWatchers {
+				b.WriteString("\n[[bot.desktop_watchers]]\n")
+				renderBotDesktopWatcher(&b, watcher)
+			}
+		}
+		b.WriteString("\n[bot.pairing]\n")
+		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Pairing.Enabled)
+		if c.Bot.Pairing.RequestTTLMinutes > 0 {
+			fmt.Fprintf(&b, "request_ttl_minutes = %d\n", c.Bot.Pairing.RequestTTLMinutes)
+		} else {
+			b.WriteString("# request_ttl_minutes = 60\n")
+		}
+		if c.Bot.Pairing.MaxPendingPerPlatform > 0 {
+			fmt.Fprintf(&b, "max_pending_per_platform = %d\n", c.Bot.Pairing.MaxPendingPerPlatform)
+		} else {
+			b.WriteString("# max_pending_per_platform = 3\n")
+		}
 		b.WriteString("\n[bot.allowlist]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Allowlist.Enabled)
 		fmt.Fprintf(&b, "allow_all = %v\n", c.Bot.Allowlist.AllowAll)
 		fmt.Fprintf(&b, "qq_users = %s\n", renderStringArray(c.Bot.Allowlist.QQUsers))
 		fmt.Fprintf(&b, "feishu_users = %s\n", renderStringArray(c.Bot.Allowlist.FeishuUsers))
 		fmt.Fprintf(&b, "weixin_users = %s\n", renderStringArray(c.Bot.Allowlist.WeixinUsers))
+		fmt.Fprintf(&b, "qq_approvers = %s\n", renderStringArray(c.Bot.Allowlist.QQApprovers))
+		fmt.Fprintf(&b, "feishu_approvers = %s\n", renderStringArray(c.Bot.Allowlist.FeishuApprovers))
+		fmt.Fprintf(&b, "weixin_approvers = %s\n", renderStringArray(c.Bot.Allowlist.WeixinApprovers))
+		fmt.Fprintf(&b, "qq_admins = %s\n", renderStringArray(c.Bot.Allowlist.QQAdmins))
+		fmt.Fprintf(&b, "feishu_admins = %s\n", renderStringArray(c.Bot.Allowlist.FeishuAdmins))
+		fmt.Fprintf(&b, "weixin_admins = %s\n", renderStringArray(c.Bot.Allowlist.WeixinAdmins))
 		fmt.Fprintf(&b, "qq_groups = %s\n", renderStringArray(c.Bot.Allowlist.QQGroups))
 		fmt.Fprintf(&b, "feishu_groups = %s\n", renderStringArray(c.Bot.Allowlist.FeishuGroups))
 		fmt.Fprintf(&b, "weixin_groups = %s\n", renderStringArray(c.Bot.Allowlist.WeixinGroups))
@@ -430,6 +559,18 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.QQ.AppID)
 		fmt.Fprintf(&b, "app_secret_env = %q\n", c.Bot.QQ.AppSecretEnv)
 		fmt.Fprintf(&b, "sandbox = %v\n", c.Bot.QQ.Sandbox)
+		if strings.TrimSpace(c.Bot.QQ.Model) != "" {
+			fmt.Fprintf(&b, "model = %q\n", strings.TrimSpace(c.Bot.QQ.Model))
+		}
+		if strings.TrimSpace(c.Bot.QQ.ToolApprovalMode) != "" {
+			fmt.Fprintf(&b, "tool_approval_mode = %q\n", strings.TrimSpace(c.Bot.QQ.ToolApprovalMode))
+		}
+		if strings.TrimSpace(c.Bot.QQ.WorkspaceRoot) != "" {
+			fmt.Fprintf(&b, "workspace_root = %q\n", strings.TrimSpace(c.Bot.QQ.WorkspaceRoot))
+		}
+		if parts := renderBotAccess(c.Bot.QQ.Access); parts != "" {
+			fmt.Fprintf(&b, "access = %s\n", parts)
+		}
 		b.WriteString("\n[bot.feishu]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Feishu.Enabled)
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.Feishu.AppID)
@@ -439,6 +580,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "mode = %q\n", c.Bot.Feishu.Mode)
 		fmt.Fprintf(&b, "webhook_port = %d\n", c.Bot.Feishu.WebhookPort)
 		fmt.Fprintf(&b, "require_mention = %v\n", c.Bot.Feishu.RequireMention)
+		if len(c.Bot.Feishu.OutboundMediaRoots) > 0 {
+			fmt.Fprintf(&b, "outbound_media_roots = %s\n", renderStringArray(c.Bot.Feishu.OutboundMediaRoots))
+		}
 		b.WriteString("\n[bot.weixin]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Weixin.Enabled)
 		fmt.Fprintf(&b, "account_id = %q\n", c.Bot.Weixin.AccountID)
@@ -461,6 +605,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if conn.WorkspaceRoot != "" {
 				fmt.Fprintf(&b, "workspace_root = %q\n", conn.WorkspaceRoot)
 			}
+			if parts := renderBotAccess(conn.Access); parts != "" {
+				fmt.Fprintf(&b, "access = %s\n", parts)
+			}
 			if conn.LastError != "" {
 				fmt.Fprintf(&b, "last_error = %q\n", conn.LastError)
 			}
@@ -480,12 +627,39 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("\n")
 	}
 
+	// [secrets] is user/global only: LoadForRoot discards project values, so
+	// the project scope never renders it. Rendering it here is what lets a
+	// user's saved toggles survive config rewrites (WriteFile re-renders the
+	// whole file from the struct).
+	if scope != RenderScopeProject {
+		b.WriteString("[secrets]   # credential protection; user/global only, ./reasonix.toml cannot override\n")
+		if c.Secrets.RedactToolOutput != nil {
+			fmt.Fprintf(&b, "redact_tool_output = %v   # mask secret-shaped values in tool output before model context/UI; transcripts and job artifacts are always redacted on disk\n", *c.Secrets.RedactToolOutput)
+		} else {
+			b.WriteString("# redact_tool_output = true   # default on; set false only if masking breaks fixture-heavy edit workflows\n")
+		}
+		if c.Secrets.FilterSubprocessEnv {
+			b.WriteString("filter_subprocess_env = true   # strip credential-named env vars from tool/hook/LSP/MCP subprocesses\n")
+		} else {
+			b.WriteString("# filter_subprocess_env = false   # opt-in; stripping tokens breaks gh, HTTPS git push, npm publish\n")
+		}
+		if c.Secrets.ProtectSensitiveFiles {
+			b.WriteString("protect_sensitive_files = true   # hide .env/.git-credentials/key files/~/.ssh from read tools\n")
+		} else {
+			b.WriteString("# protect_sensitive_files = false   # opt-in; values are already masked by redaction even when files stay readable\n")
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString("# External MCP servers. type: \"stdio\" (default, a subprocess) | \"http\" | \"sse\".\n")
 	b.WriteString("# ${VAR} / ${VAR:-default} are expanded from the environment in command/args/env/url/headers.\n")
 	if len(c.Plugins) == 0 {
 		b.WriteString("# [[plugins]]\n")
 		b.WriteString("# name    = \"example\"\n")
 		b.WriteString("# command = \"reasonix-plugin-example\"\n")
+		b.WriteString("# call_timeout_seconds = 600       # optional per-server MCP call timeout\n")
+		b.WriteString("# tool_timeout_seconds = { \"generate_video\" = 1800 }   # raw MCP tool names\n")
+		b.WriteString("# trusted_read_only_tools = [\"search\"]   # optional pre-seeded MCP read-only trust\n")
 		b.WriteString("# [[plugins]]                                  # a remote server over Streamable HTTP\n")
 		b.WriteString("# name    = \"stripe\"\n")
 		b.WriteString("# type    = \"http\"\n")
@@ -513,10 +687,445 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if len(pl.Env) > 0 {
 				fmt.Fprintf(&b, "env     = %s\n", renderStringMap(pl.Env))
 			}
+			if pl.CallTimeoutSeconds > 0 {
+				b.WriteString("# Per-server MCP call timeout; 0 keeps the global/default cap.\n")
+				fmt.Fprintf(&b, "call_timeout_seconds = %d\n", pl.CallTimeoutSeconds)
+			}
+			if hasPositiveIntMap(pl.ToolTimeoutSeconds) {
+				b.WriteString("# Raw MCP tool names with per-tool call timeouts.\n")
+				fmt.Fprintf(&b, "tool_timeout_seconds = %s\n", renderIntMap(pl.ToolTimeoutSeconds))
+			}
+			if len(pl.TrustedReadOnlyTools) > 0 {
+				b.WriteString("# optional pre-seeded MCP read-only trust; the approval prompt can also remember this\n")
+				fmt.Fprintf(&b, "trusted_read_only_tools = %s\n", renderStringArray(pl.TrustedReadOnlyTools))
+			}
 			if pl.AutoStart != nil {
 				fmt.Fprintf(&b, "auto_start = %v\n", *pl.AutoStart)
 			}
 		}
+	}
+
+	return b.String()
+}
+
+// RenderTOMLProjectDelta generates TOML containing only the sections and fields
+// that differ from built-in defaults. Unlike RenderTOMLForScope (which renders
+// the full config with comments), this emits clean TOML that can be surgically
+// merged into an existing project config file via replaceTOMLSection.
+func RenderTOMLProjectDelta(c *Config) string {
+	if c == nil {
+		return ""
+	}
+	d := Default()
+	var b strings.Builder
+
+	// Top-level scalar fields
+	if v := configVersion(c); v != d.ConfigVersion {
+		fmt.Fprintf(&b, "config_version = %d\n", v)
+	}
+	if c.DefaultModel != d.DefaultModel {
+		fmt.Fprintf(&b, "default_model = %q\n", c.DefaultModel)
+	}
+	if c.Language != "" && c.Language != d.Language {
+		fmt.Fprintf(&b, "language = %q\n", c.Language)
+	}
+
+	// [ui] section — whole-section comparison
+	if !reflect.DeepEqual(c.UI, d.UI) {
+		b.WriteString("[ui]\n")
+		if c.UI.Theme != d.UI.Theme {
+			fmt.Fprintf(&b, "theme = %q\n", c.UITheme())
+		}
+		if s := c.UIThemeStyle(); s != "" && s != d.UIThemeStyle() {
+			fmt.Fprintf(&b, "theme_style = %q\n", s)
+		}
+		if l := c.UIShortcutLayout(); l != "classic" {
+			fmt.Fprintf(&b, "shortcut_layout = %q\n", l)
+		}
+		if strings.TrimSpace(c.UI.CursorShape) != "" {
+			fmt.Fprintf(&b, "cursor_shape = %q\n", c.UICursorShape())
+		}
+		if c.UI.CloseBehavior != d.UI.CloseBehavior {
+			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())
+		}
+		if c.UI.ShowReasoning != d.UI.ShowReasoning {
+			fmt.Fprintf(&b, "show_reasoning = %v\n", c.UI.ShowReasoning)
+		}
+		b.WriteString("\n")
+	}
+
+	// [network] section
+	if !reflect.DeepEqual(c.Network, d.Network) {
+		b.WriteString("[network]\n")
+		if c.Network.ProxyMode != d.Network.ProxyMode {
+			fmt.Fprintf(&b, "proxy_mode = %q\n", c.NetworkProxyMode())
+		}
+		if c.Network.ProxyURL != "" {
+			fmt.Fprintf(&b, "proxy_url = %q\n", c.Network.ProxyURL)
+		}
+		if c.Network.NoProxy != "" {
+			fmt.Fprintf(&b, "no_proxy = %q\n", c.Network.NoProxy)
+		}
+		if c.Network.Proxy.Type != "" || c.Network.Proxy.Server != "" || c.Network.Proxy.Port > 0 || c.Network.Proxy.Username != "" || c.Network.Proxy.Password != "" {
+			b.WriteString("[network.proxy]\n")
+			pt := c.Network.Proxy.Type
+			if pt == "" {
+				pt = "socks5"
+			}
+			fmt.Fprintf(&b, "type = %q\n", pt)
+			if c.Network.Proxy.Server != "" {
+				fmt.Fprintf(&b, "server = %q\n", c.Network.Proxy.Server)
+			}
+			if c.Network.Proxy.Port > 0 {
+				fmt.Fprintf(&b, "port = %d\n", c.Network.Proxy.Port)
+			}
+			if c.Network.Proxy.Username != "" {
+				fmt.Fprintf(&b, "username = %q\n", c.Network.Proxy.Username)
+			}
+			if c.Network.Proxy.Password != "" {
+				fmt.Fprintf(&b, "password = %q\n", c.Network.Proxy.Password)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// [agent] section — per-field comparison
+	var agentBuf strings.Builder
+	anyAgent := false
+
+	if sp := strings.TrimSpace(c.Agent.SystemPrompt); sp != "" && sp != d.Agent.SystemPrompt {
+		agentBuf.WriteString("system_prompt = \"\"\"\n")
+		agentBuf.WriteString(sp)
+		agentBuf.WriteString("\"\"\"\n")
+		anyAgent = true
+	}
+	if c.Agent.SystemPromptFile != "" && c.Agent.SystemPromptFile != d.Agent.SystemPromptFile {
+		fmt.Fprintf(&agentBuf, "system_prompt_file = %q\n", c.Agent.SystemPromptFile)
+		anyAgent = true
+	}
+	if c.Agent.Temperature != d.Agent.Temperature {
+		fmt.Fprintf(&agentBuf, "temperature = %s\n", formatFloat(c.Agent.Temperature))
+		anyAgent = true
+	}
+	if c.Agent.ReasoningLanguage != d.Agent.ReasoningLanguage {
+		if l := c.ReasoningLanguage(); l != "auto" {
+			fmt.Fprintf(&agentBuf, "reasoning_language = %q\n", l)
+			anyAgent = true
+		}
+	}
+	if c.Agent.AutoPlanClassifier != "" && c.Agent.AutoPlanClassifier != d.Agent.AutoPlanClassifier {
+		fmt.Fprintf(&agentBuf, "auto_plan_classifier = %q\n", c.Agent.AutoPlanClassifier)
+		anyAgent = true
+	}
+	if c.Agent.SoftCompactRatio != d.Agent.SoftCompactRatio {
+		fmt.Fprintf(&agentBuf, "soft_compact_ratio = %s\n", formatFloat(c.Agent.SoftCompactRatio))
+		anyAgent = true
+	}
+	if c.Agent.ToolResultSnipRatio != d.Agent.ToolResultSnipRatio {
+		fmt.Fprintf(&agentBuf, "tool_result_snip_ratio = %s\n", formatFloat(c.Agent.ToolResultSnipRatio))
+		anyAgent = true
+	}
+	if c.Agent.CompactRatio != d.Agent.CompactRatio {
+		fmt.Fprintf(&agentBuf, "compact_ratio = %s\n", formatFloat(c.Agent.CompactRatio))
+		anyAgent = true
+	}
+	if c.Agent.CompactForceRatio != d.Agent.CompactForceRatio {
+		fmt.Fprintf(&agentBuf, "compact_force_ratio = %s\n", formatFloat(c.Agent.CompactForceRatio))
+		anyAgent = true
+	}
+	if c.Agent.Keep != nil && !reflect.DeepEqual(c.Agent.Keep, d.Agent.Keep) {
+		fmt.Fprintf(&agentBuf, "keep = %s\n", renderStringArray(c.Agent.Keep))
+		anyAgent = true
+	}
+	if c.Agent.RecentKeep > 0 && c.Agent.RecentKeep != d.Agent.RecentKeep {
+		fmt.Fprintf(&agentBuf, "recent_keep = %d\n", c.Agent.RecentKeep)
+		anyAgent = true
+	}
+	if c.Agent.ColdResumePrune != d.Agent.ColdResumePrune {
+		fmt.Fprintf(&agentBuf, "cold_resume_prune = %v\n", c.ColdResumePruneEnabled())
+		anyAgent = true
+	}
+	if len(c.Agent.PlanModeAllowedTools) > 0 && !reflect.DeepEqual(c.Agent.PlanModeAllowedTools, d.Agent.PlanModeAllowedTools) {
+		fmt.Fprintf(&agentBuf, "plan_mode_allowed_tools = %s\n", renderStringArray(c.Agent.PlanModeAllowedTools))
+		anyAgent = true
+	}
+	if len(c.Agent.PlanModeReadOnlyCommands) > 0 && !reflect.DeepEqual(c.Agent.PlanModeReadOnlyCommands, d.Agent.PlanModeReadOnlyCommands) {
+		fmt.Fprintf(&agentBuf, "plan_mode_read_only_commands = %s\n", renderStringArray(c.Agent.PlanModeReadOnlyCommands))
+		anyAgent = true
+	}
+	if c.Agent.PlannerModel != "" && c.Agent.PlannerModel != d.Agent.PlannerModel {
+		fmt.Fprintf(&agentBuf, "planner_model = %q\n", c.Agent.PlannerModel)
+		anyAgent = true
+	}
+	if c.Agent.SubagentModel != "" && c.Agent.SubagentModel != d.Agent.SubagentModel {
+		fmt.Fprintf(&agentBuf, "subagent_model = %q\n", c.Agent.SubagentModel)
+		anyAgent = true
+	}
+	if len(c.Agent.SubagentModels) > 0 && !reflect.DeepEqual(c.Agent.SubagentModels, d.Agent.SubagentModels) {
+		fmt.Fprintf(&agentBuf, "subagent_models = %s\n", renderStringMap(c.Agent.SubagentModels))
+		anyAgent = true
+	}
+	if c.Agent.SubagentEffort != "" && c.Agent.SubagentEffort != d.Agent.SubagentEffort {
+		fmt.Fprintf(&agentBuf, "subagent_effort = %q\n", c.Agent.SubagentEffort)
+		anyAgent = true
+	}
+	if len(c.Agent.SubagentEfforts) > 0 && !reflect.DeepEqual(c.Agent.SubagentEfforts, d.Agent.SubagentEfforts) {
+		fmt.Fprintf(&agentBuf, "subagent_efforts = %s\n", renderStringMap(c.Agent.SubagentEfforts))
+		anyAgent = true
+	}
+	if c.Agent.MaxSubagentDepth != d.Agent.MaxSubagentDepth {
+		fmt.Fprintf(&agentBuf, "max_subagent_depth = %d\n", c.Agent.MaxSubagentDepth)
+		anyAgent = true
+	}
+	if c.Agent.OutputStyle != "" && c.Agent.OutputStyle != d.Agent.OutputStyle {
+		fmt.Fprintf(&agentBuf, "output_style = %q\n", c.Agent.OutputStyle)
+		anyAgent = true
+	}
+
+	if anyAgent {
+		b.WriteString("[agent]\n")
+		b.WriteString(agentBuf.String())
+		b.WriteString("\n")
+	}
+
+	// [[providers]] — include user-defined providers that aren't built-in
+	proj := projectScopedConfigForRender(c)
+	if proj != nil && len(proj.Providers) > 0 && !reflect.DeepEqual(proj.Providers, d.Providers) {
+		for _, p := range proj.Providers {
+			b.WriteString("[[providers]]\n")
+			fmt.Fprintf(&b, "name        = %q\n", p.Name)
+			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
+			fmt.Fprintf(&b, "base_url    = %q\n", p.BaseURL)
+			if p.ChatURL != "" {
+				fmt.Fprintf(&b, "chat_url    = %q\n", p.ChatURL)
+			}
+			if len(p.Models) > 0 {
+				fmt.Fprintf(&b, "models      = %s\n", renderStringArray(p.Models))
+				if p.Default != "" {
+					fmt.Fprintf(&b, "default     = %q\n", p.Default)
+				}
+			} else if p.Model != "" {
+				fmt.Fprintf(&b, "model       = %q\n", p.Model)
+			}
+			if p.ModelsURL != "" {
+				fmt.Fprintf(&b, "models_url  = %q\n", p.ModelsURL)
+			}
+			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			if p.PresetID != "" {
+				fmt.Fprintf(&b, "preset_id   = %q\n", p.PresetID)
+			}
+			if p.PresetVersion > 0 {
+				fmt.Fprintf(&b, "preset_version = %d\n", p.PresetVersion)
+			}
+			if len(p.Headers) > 0 {
+				fmt.Fprintf(&b, "headers     = %s\n", renderStringMap(p.Headers))
+			}
+			if len(p.ExtraBody) > 0 {
+				fmt.Fprintf(&b, "extra_body  = %s\n", renderAnyMap(p.ExtraBody))
+			}
+			if p.AuthHeader {
+				b.WriteString("auth_header = true\n")
+			}
+			if p.BalanceURL != "" {
+				fmt.Fprintf(&b, "balance_url = %q\n", p.BalanceURL)
+			}
+			if p.ContextWindow > 0 {
+				fmt.Fprintf(&b, "context_window = %d\n", p.ContextWindow)
+			}
+			if p.Price != nil {
+				fmt.Fprintf(&b, "price       = %s\n", renderPricingInline(p.Price))
+			}
+			if len(p.Prices) > 0 {
+				fmt.Fprintf(&b, "prices      = %s\n", renderPricingMap(p.Prices))
+			}
+			if p.Thinking != "" {
+				fmt.Fprintf(&b, "thinking    = %q\n", p.Thinking)
+			}
+			if p.Effort != "" {
+				fmt.Fprintf(&b, "effort      = %q\n", p.Effort)
+			}
+			if p.Vision {
+				b.WriteString("vision      = true\n")
+			}
+			if p.VisionModels != nil {
+				fmt.Fprintf(&b, "vision_models = %s\n", renderStringArray(p.VisionModels))
+			}
+			if p.VisionDetail != "" {
+				fmt.Fprintf(&b, "vision_detail = %q\n", p.VisionDetail)
+			}
+			if p.ReasoningProtocol != "" {
+				fmt.Fprintf(&b, "reasoning_protocol = %q\n", p.ReasoningProtocol)
+			}
+			if len(p.SupportedEfforts) > 0 {
+				fmt.Fprintf(&b, "supported_efforts = %s\n", renderStringArray(p.SupportedEfforts))
+			}
+			if p.DefaultEffort != "" {
+				fmt.Fprintf(&b, "default_effort    = %q\n", p.DefaultEffort)
+			}
+			if len(p.ModelOverrides) > 0 {
+				fmt.Fprintf(&b, "model_overrides   = %s\n", renderModelOverrides(p.ModelOverrides))
+			}
+			if p.NoProxy {
+				b.WriteString("no_proxy    = true\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// [tools]
+	if len(c.Tools.Enabled) > 0 ||
+		(c.Tools.BashTimeoutSeconds != nil && *c.Tools.BashTimeoutSeconds != 0) ||
+		(c.Tools.MCPCallTimeoutSeconds != nil && *c.Tools.MCPCallTimeoutSeconds > 0) {
+		b.WriteString("[tools]\n")
+		if len(c.Tools.Enabled) > 0 {
+			fmt.Fprintf(&b, "enabled = %s\n", renderStringArray(c.Tools.Enabled))
+		}
+		if c.Tools.BashTimeoutSeconds != nil && *c.Tools.BashTimeoutSeconds != 0 {
+			fmt.Fprintf(&b, "bash_timeout_seconds = %d\n", *c.Tools.BashTimeoutSeconds)
+		}
+		if c.Tools.MCPCallTimeoutSeconds != nil && *c.Tools.MCPCallTimeoutSeconds > 0 {
+			fmt.Fprintf(&b, "mcp_call_timeout_seconds = %d\n", *c.Tools.MCPCallTimeoutSeconds)
+		}
+		b.WriteString("\n")
+	}
+
+	// [tools.background_jobs]
+	if c.Tools.BackgroundJobs != d.Tools.BackgroundJobs {
+		if c.Tools.BackgroundJobs.StalledWarningSeconds != nil && *c.Tools.BackgroundJobs.StalledWarningSeconds > 0 {
+			b.WriteString("[tools.background_jobs]\n")
+			fmt.Fprintf(&b, "stalled_warning_seconds = %d\n", *c.Tools.BackgroundJobs.StalledWarningSeconds)
+			b.WriteString("\n")
+		}
+	}
+
+	// [tools.shell]
+	if !reflect.DeepEqual(c.Tools.Shell, d.Tools.Shell) {
+		b.WriteString("[tools.shell]\n")
+		if c.Tools.Shell.Prefer != d.Tools.Shell.Prefer {
+			fmt.Fprintf(&b, "prefer = %q\n", c.Tools.Shell.Prefer)
+		}
+		if c.Tools.Shell.Path != d.Tools.Shell.Path {
+			fmt.Fprintf(&b, "path = %q\n", c.Tools.Shell.Path)
+		}
+		b.WriteString("\n")
+	}
+
+	// [lsp]
+	if !reflect.DeepEqual(c.LSP, d.LSP) {
+		renderLSPConfig(&b, c.LSP)
+	}
+
+	// [skills]
+	if !reflect.DeepEqual(c.Skills, d.Skills) {
+		b.WriteString("[skills]\n")
+		if len(c.Skills.Paths) > 0 {
+			fmt.Fprintf(&b, "paths = %s\n", renderStringArray(c.Skills.Paths))
+		}
+		if len(c.Skills.ExcludedPaths) > 0 {
+			fmt.Fprintf(&b, "excluded_paths = %s\n", renderStringArray(c.Skills.ExcludedPaths))
+		}
+		if c.Skills.MaxDepth != 0 {
+			fmt.Fprintf(&b, "max_depth = %d\n", c.SkillMaxDepth())
+		}
+		if disabled := c.DisabledSkillNames(); len(disabled) > 0 {
+			fmt.Fprintf(&b, "disabled_skills = %s\n\n", renderStringArray(disabled))
+		}
+	}
+
+	// [permissions]
+	if !reflect.DeepEqual(c.Permissions, d.Permissions) {
+		b.WriteString("[permissions]\n")
+		mode := c.Permissions.Mode
+		if mode == "" {
+			mode = "ask"
+		}
+		if mode != "ask" {
+			fmt.Fprintf(&b, "mode = %q\n", mode)
+		}
+		if len(c.Permissions.Deny) > 0 {
+			fmt.Fprintf(&b, "deny = %s\n", renderStringArray(c.Permissions.Deny))
+		}
+		if len(c.Permissions.Allow) > 0 {
+			fmt.Fprintf(&b, "allow = %s\n", renderStringArray(c.Permissions.Allow))
+		}
+		if len(c.Permissions.Ask) > 0 {
+			fmt.Fprintf(&b, "ask = %s\n", renderStringArray(c.Permissions.Ask))
+		}
+		b.WriteString("\n")
+	}
+
+	// [sandbox]
+	if !reflect.DeepEqual(c.Sandbox, d.Sandbox) {
+		var sandboxBuf strings.Builder
+		if c.Sandbox.WorkspaceRoot != "" {
+			fmt.Fprintf(&sandboxBuf, "workspace_root = %q\n", c.Sandbox.WorkspaceRoot)
+		}
+		if len(c.Sandbox.AllowWrite) > 0 {
+			fmt.Fprintf(&sandboxBuf, "allow_write = %s\n", renderStringArray(c.Sandbox.AllowWrite))
+		}
+		// Only persist a bash mode when its effective value differs from the
+		// platform default. On Windows, even explicit "enforce" currently
+		// resolves to "off", so project configs should not imply otherwise.
+		if strings.TrimSpace(c.Sandbox.Bash) != "" && c.BashMode() != d.BashModeForGOOS(runtimeGOOS) {
+			fmt.Fprintf(&sandboxBuf, "bash = %q\n", c.BashMode())
+		}
+		if c.Sandbox.Network != d.Sandbox.Network {
+			fmt.Fprintf(&sandboxBuf, "network = %v\n", c.Sandbox.Network)
+		}
+		if sandboxBuf.Len() > 0 {
+			b.WriteString("[sandbox]\n")
+			b.WriteString(sandboxBuf.String())
+			b.WriteString("\n")
+		}
+	}
+
+	// [statusline]
+	if !reflect.DeepEqual(c.Statusline, d.Statusline) {
+		b.WriteString("[statusline]\n")
+		if c.Statusline.Command != "" {
+			fmt.Fprintf(&b, "command = %q\n", c.Statusline.Command)
+		}
+		b.WriteString("\n")
+	}
+
+	// [[plugins]] — always include when set; replaces all existing entries
+	for _, pl := range c.Plugins {
+		b.WriteString("[[plugins]]\n")
+		fmt.Fprintf(&b, "name    = %q\n", pl.Name)
+		if pl.Type != "" {
+			fmt.Fprintf(&b, "type    = %q\n", pl.Type)
+		}
+		if pl.Command != "" {
+			fmt.Fprintf(&b, "command = %q\n", pl.Command)
+		}
+		if len(pl.Args) > 0 {
+			fmt.Fprintf(&b, "args    = %s\n", renderStringArray(pl.Args))
+		}
+		if pl.URL != "" {
+			fmt.Fprintf(&b, "url     = %q\n", pl.URL)
+		}
+		if len(pl.Headers) > 0 {
+			fmt.Fprintf(&b, "headers = %s\n", renderStringMap(pl.Headers))
+		}
+		if len(pl.Env) > 0 {
+			fmt.Fprintf(&b, "env     = %s\n", renderStringMap(pl.Env))
+		}
+		if pl.CallTimeoutSeconds > 0 {
+			b.WriteString("# Per-server MCP call timeout; 0 keeps the global/default cap.\n")
+			fmt.Fprintf(&b, "call_timeout_seconds = %d\n", pl.CallTimeoutSeconds)
+		}
+		if hasPositiveIntMap(pl.ToolTimeoutSeconds) {
+			b.WriteString("# Raw MCP tool names with per-tool call timeouts.\n")
+			fmt.Fprintf(&b, "tool_timeout_seconds = %s\n", renderIntMap(pl.ToolTimeoutSeconds))
+		}
+		if len(pl.TrustedReadOnlyTools) > 0 {
+			b.WriteString("# optional pre-seeded MCP read-only trust; the approval prompt can also remember this\n")
+			fmt.Fprintf(&b, "trusted_read_only_tools = %s\n", renderStringArray(pl.TrustedReadOnlyTools))
+		}
+		if pl.AutoStart != nil {
+			fmt.Fprintf(&b, "auto_start = %v\n", *pl.AutoStart)
+		}
+		b.WriteString("\n")
 	}
 
 	return b.String()
@@ -577,6 +1186,37 @@ func shouldRenderNetwork(c, defaults *Config, scope RenderScope) bool {
 	return !reflect.DeepEqual(c.Network, defaults.Network)
 }
 
+func shouldRenderEnvironment(c, defaults *Config, scope RenderScope) bool {
+	if scope != RenderScopeProject {
+		return true
+	}
+	return !reflect.DeepEqual(c.Environment, defaults.Environment)
+}
+
+func renderEnvironmentConfig(b *strings.Builder, cfg EnvironmentConfig) {
+	b.WriteString("[environment]\n")
+	enabled := true
+	if cfg.Enabled != nil {
+		enabled = *cfg.Enabled
+	}
+	fmt.Fprintf(b, "enabled = %v   # inject a stable startup environment summary into the model prompt\n", enabled)
+	if len(cfg.Tools) == 0 {
+		b.WriteString("# [environment.tools]\n")
+		b.WriteString("# go = \"/opt/homebrew/bin/go\"   # trusted executable path; workspace-local paths are not auto-executed\n\n")
+		return
+	}
+	b.WriteString("\n[environment.tools]\n")
+	names := make([]string, 0, len(cfg.Tools))
+	for name := range cfg.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(b, "%s = %q\n", renderTOMLKeyPart(name), cfg.Tools[name])
+	}
+	b.WriteString("\n")
+}
+
 func shouldRenderProviders(c, defaults *Config, scope RenderScope) bool {
 	if scope != RenderScopeProject {
 		return true
@@ -633,7 +1273,7 @@ func renderLSPConfig(b *strings.Builder, cfg LSPConfig) {
 	sort.Strings(langs)
 	for _, lang := range langs {
 		srv := cfg.Servers[lang]
-		fmt.Fprintf(b, "[lsp.servers.%s]\n", renderTOMLKeyPart(lang))
+		fmt.Fprintf(b, "[%s]\n", renderTOMLTablePath("lsp", "servers", lang))
 		if srv.Command != "" {
 			fmt.Fprintf(b, "command = %q\n", srv.Command)
 		}
@@ -661,6 +1301,14 @@ func renderTOMLKeyPart(key string) string {
 		return key
 	}
 	return strconv.Quote(key)
+}
+
+func renderTOMLTablePath(parts ...string) string {
+	rendered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		rendered = append(rendered, renderTOMLKeyPart(part))
+	}
+	return strings.Join(rendered, ".")
 }
 
 func isBareTOMLKey(key string) bool {
@@ -704,7 +1352,160 @@ func renderStringMap(m map[string]string) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s = %q", k, m[k])
+		fmt.Fprintf(&b, "%s = %q", renderTOMLKeyPart(k), m[k])
+	}
+	b.WriteString(" }")
+	return b.String()
+}
+
+func renderAnyMap(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		if _, ok := renderAnyValue(v); ok {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		value, _ := renderAnyValue(m[k])
+		fmt.Fprintf(&b, "%s = %s", strconv.Quote(k), value)
+	}
+	b.WriteString(" }")
+	return b.String()
+}
+
+func renderAnyValue(v any) (string, bool) {
+	switch x := v.(type) {
+	case nil:
+		return "", false
+	case string:
+		return strconv.Quote(x), true
+	case bool:
+		if x {
+			return "true", true
+		}
+		return "false", true
+	case int:
+		return strconv.Itoa(x), true
+	case int8:
+		return strconv.FormatInt(int64(x), 10), true
+	case int16:
+		return strconv.FormatInt(int64(x), 10), true
+	case int32:
+		return strconv.FormatInt(int64(x), 10), true
+	case int64:
+		return strconv.FormatInt(x, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint64:
+		return strconv.FormatUint(x, 10), true
+	case float32:
+		return formatFloat(float64(x)), true
+	case float64:
+		return formatFloat(x), true
+	case []any:
+		parts := make([]string, 0, len(x))
+		for _, item := range x {
+			part, ok := renderAnyValue(item)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, part)
+		}
+		return "[" + strings.Join(parts, ", ") + "]", true
+	case []string:
+		return renderStringArray(x), true
+	case map[string]any:
+		return renderAnyMap(x), true
+	case map[string]string:
+		return renderStringMap(x), true
+	default:
+		return "", false
+	}
+}
+
+func renderModelOverrides(m map[string]ProviderModelOverride) string {
+	keys := make([]string, 0, len(m))
+	for k, ov := range m {
+		if k == "" || modelOverrideEmpty(ov) {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q = %s", k, renderModelOverride(m[k]))
+	}
+	b.WriteString(" }")
+	return b.String()
+}
+
+func renderModelOverride(ov ProviderModelOverride) string {
+	var parts []string
+	if ov.ReasoningProtocol != "" {
+		parts = append(parts, fmt.Sprintf("reasoning_protocol = %q", ov.ReasoningProtocol))
+	}
+	if len(ov.SupportedEfforts) > 0 {
+		parts = append(parts, "supported_efforts = "+renderStringArray(ov.SupportedEfforts))
+	}
+	if ov.DefaultEffort != "" {
+		parts = append(parts, fmt.Sprintf("default_effort = %q", ov.DefaultEffort))
+	}
+	if ov.Vision != nil {
+		parts = append(parts, fmt.Sprintf("vision = %t", *ov.Vision))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
+
+func modelOverrideEmpty(ov ProviderModelOverride) bool {
+	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil
+}
+
+func hasPositiveIntMap(m map[string]int) bool {
+	for k, v := range m {
+		if strings.TrimSpace(k) != "" && v > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// renderIntMap renders a map[string]int as a TOML inline table with positive
+// values only, preserving deterministic key order.
+func renderIntMap(m map[string]int) string {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if strings.TrimSpace(k) != "" && v > 0 {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q = %d", k, m[k])
 	}
 	b.WriteString(" }")
 	return b.String()
@@ -728,6 +1529,30 @@ func renderBotCredential(cred BotConnectionCredential) string {
 		return ""
 	}
 	return renderStringMap(parts)
+}
+
+func renderBotAccess(access BotAccessConfig) string {
+	hasList := len(access.Users) > 0 || len(access.Groups) > 0 || len(access.Approvers) > 0 || len(access.Admins) > 0
+	if !access.Enabled && !access.AllowAll && !access.PairingEnabled && !hasList {
+		return ""
+	}
+	var parts []string
+	parts = append(parts, fmt.Sprintf("enabled = %v", access.Enabled))
+	parts = append(parts, fmt.Sprintf("allow_all = %v", access.AllowAll))
+	parts = append(parts, fmt.Sprintf("pairing_enabled = %v", access.PairingEnabled))
+	if len(access.Users) > 0 {
+		parts = append(parts, "users = "+renderStringArray(access.Users))
+	}
+	if len(access.Groups) > 0 {
+		parts = append(parts, "groups = "+renderStringArray(access.Groups))
+	}
+	if len(access.Approvers) > 0 {
+		parts = append(parts, "approvers = "+renderStringArray(access.Approvers))
+	}
+	if len(access.Admins) > 0 {
+		parts = append(parts, "admins = "+renderStringArray(access.Admins))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
 }
 
 func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
@@ -766,6 +1591,54 @@ func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+func renderBotRoute(b *strings.Builder, route BotRouteConfig) {
+	if strings.TrimSpace(route.ConnectionID) != "" {
+		fmt.Fprintf(b, "connection_id = %q\n", strings.TrimSpace(route.ConnectionID))
+	}
+	if strings.TrimSpace(route.Platform) != "" {
+		fmt.Fprintf(b, "platform = %q\n", strings.TrimSpace(route.Platform))
+	}
+	if strings.TrimSpace(route.ChatType) != "" {
+		fmt.Fprintf(b, "chat_type = %q\n", strings.TrimSpace(route.ChatType))
+	}
+	if strings.TrimSpace(route.ChatID) != "" {
+		fmt.Fprintf(b, "chat_id = %q\n", strings.TrimSpace(route.ChatID))
+	}
+	if strings.TrimSpace(route.UserID) != "" {
+		fmt.Fprintf(b, "user_id = %q\n", strings.TrimSpace(route.UserID))
+	}
+	if strings.TrimSpace(route.ThreadID) != "" {
+		fmt.Fprintf(b, "thread_id = %q\n", strings.TrimSpace(route.ThreadID))
+	}
+	if strings.TrimSpace(route.Model) != "" {
+		fmt.Fprintf(b, "model = %q\n", strings.TrimSpace(route.Model))
+	}
+	if strings.TrimSpace(route.ToolApprovalMode) != "" {
+		fmt.Fprintf(b, "tool_approval_mode = %q\n", strings.TrimSpace(route.ToolApprovalMode))
+	}
+	if strings.TrimSpace(route.WorkspaceRoot) != "" {
+		fmt.Fprintf(b, "workspace_root = %q\n", strings.TrimSpace(route.WorkspaceRoot))
+	}
+}
+
+func renderBotDesktopWatcher(b *strings.Builder, watcher BotDesktopWatcherConfig) {
+	if strings.TrimSpace(watcher.Platform) != "" {
+		fmt.Fprintf(b, "platform = %q\n", strings.TrimSpace(watcher.Platform))
+	}
+	if strings.TrimSpace(watcher.ConnectionID) != "" {
+		fmt.Fprintf(b, "connection_id = %q\n", strings.TrimSpace(watcher.ConnectionID))
+	}
+	if strings.TrimSpace(watcher.Domain) != "" {
+		fmt.Fprintf(b, "domain = %q\n", strings.TrimSpace(watcher.Domain))
+	}
+	if strings.TrimSpace(watcher.ChatType) != "" {
+		fmt.Fprintf(b, "chat_type = %q\n", strings.TrimSpace(watcher.ChatType))
+	}
+	if strings.TrimSpace(watcher.ChatID) != "" {
+		fmt.Fprintf(b, "chat_id = %q\n", strings.TrimSpace(watcher.ChatID))
+	}
 }
 
 // renderRuleList emits a permission rule list. A populated list renders as an

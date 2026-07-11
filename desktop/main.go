@@ -9,6 +9,8 @@ package main
 import (
 	"embed"
 	"os"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 
 	"github.com/wailsapp/wails/v2"
@@ -22,8 +24,20 @@ import (
 	// cmd/reasonix does — boot.Build resolves providers/tools from these registries.
 	_ "reasonix/internal/provider/anthropic"
 	_ "reasonix/internal/provider/openai"
+	"reasonix/internal/sandbox"
 	_ "reasonix/internal/tool/builtin"
 )
+
+// runWindowsSandboxHelperIfRequested reports whether argv (os.Args-shaped, so
+// argv[0] is the program name) asks this process to act as the hidden Windows
+// sandbox helper, and runs it when so. Split from main so tests can pin that
+// the desktop binary keeps the helper route the sandbox wrapper depends on.
+func runWindowsSandboxHelperIfRequested(argv []string) (int, bool) {
+	if len(argv) > 1 && argv[1] == sandbox.WindowsHelperCommand {
+		return sandbox.RunWindowsSandboxHelper(argv[2:], os.Stdin, os.Stdout, os.Stderr), true
+	}
+	return 0, false
+}
 
 // assets embeds the built frontend. `all:` so dotfiles (e.g. the dist .gitkeep
 // that keeps this directive compilable before the first `pnpm build`) are
@@ -47,7 +61,10 @@ var channel = "stable"
 // macOS release builds. Local/ad-hoc macOS builds keep the manual download path.
 var macSelfUpdate = "false"
 
-const disableWebview2GPUEnv = "REASONIX_DESKTOP_DISABLE_WEBVIEW2_GPU"
+const (
+	disableWebview2GPUEnv  = "REASONIX_DESKTOP_DISABLE_WEBVIEW2_GPU"
+	linuxDRIRenderNodeGlob = "/dev/dri/renderD*"
+)
 
 func macSelfUpdateAllowed() bool {
 	switch strings.ToLower(strings.TrimSpace(macSelfUpdate)) {
@@ -70,7 +87,31 @@ func windowsWebview2GPUDisabled() bool {
 	return channel == "canary"
 }
 
+func linuxWebviewGpuPolicy(pattern string) linux.WebviewGpuPolicy {
+	matches, err := filepath.Glob(pattern)
+	if err == nil {
+		for _, path := range matches {
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			if err == nil {
+				_ = f.Close()
+				return linux.WebviewGpuPolicyOnDemand
+			}
+		}
+	}
+	return linux.WebviewGpuPolicyNever
+}
+
 func main() {
+	// The Windows bash sandbox relaunches the current executable as a hidden
+	// helper process. Dispatch it before any Wails or single-instance setup:
+	// otherwise every sandboxed command starts a second GUI instance that
+	// forwards to the running app and exits 0 with no output, so bash silently
+	// returns empty on Windows (#6051, #6067, #6072).
+	if code, ok := runWindowsSandboxHelperIfRequested(os.Args); ok {
+		os.Exit(code)
+	}
+	sandbox.RegisterHelperDispatch()
+
 	app := NewApp()
 
 	// Restore saved window size, or fall back to the default.
@@ -84,10 +125,17 @@ func main() {
 		}
 	}
 
+	// Restore saved desktop zoom factor (WebView2 ZoomFactor), or default to 1.0.
+	zoomFactor := 1.0
+	if zf, ok := loadZoomFactor(); ok && zf > 0 {
+		zoomFactor = zf
+	}
+
 	err := wails.Run(&options.App{
 		Title:     "Reasonix",
 		Width:     width,
 		Height:    height,
+		Frameless: goruntime.GOOS == "windows",
 		MinWidth:  760,
 		MinHeight: 480,
 		// Match the dark UI shell so the initial webview background doesn't flash
@@ -126,6 +174,7 @@ func main() {
 			// Follow the OS theme so the title bar matches light/dark system
 			// preference instead of being locked to dark.
 			Theme:                windows.SystemDefault,
+			ZoomFactor:           zoomFactor,
 			WebviewGpuIsDisabled: windowsWebview2GPUDisabled(),
 		},
 		Linux: &linux.Options{
@@ -133,9 +182,10 @@ func main() {
 			// WebKitGTK GPU compositing is inconsistent across distros/drivers and
 			// is the one real cross-platform rough edge for a Go+webview stack:
 			// "always" can yield blank or flickering webviews on some setups, so
-			// we let the webview decide on demand. Users still hitting artifacts
-			// can fall back to WEBKIT_DISABLE_COMPOSITING_MODE=1 (see README).
-			WebviewGpuPolicy: linux.WebviewGpuPolicyOnDemand,
+			// we let the webview decide on demand when a render node is usable, and
+			// disable acceleration when remote/software-rendered sessions cannot
+			// access /dev/dri.
+			WebviewGpuPolicy: linuxWebviewGpuPolicy(linuxDRIRenderNodeGlob),
 		},
 	})
 	if err != nil {

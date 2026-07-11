@@ -58,6 +58,40 @@ func TestMigrateLegacySessionsReconstructsConversation(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacySessionsReplaysNativeEventLog(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	path := filepath.Join(src, "native.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "checkpoint prompt"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession base: %v", err)
+	}
+	loaded.Add(provider.Message{Role: provider.RoleAssistant, Content: "event tail"})
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot tail: %v", err)
+	}
+
+	n, err := MigrateLegacySessions(src, dest, nil)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("imported %d sessions, want 1", n)
+	}
+	migrated, err := LoadSession(filepath.Join(dest, "native.jsonl"))
+	if err != nil {
+		t.Fatalf("LoadSession migrated: %v", err)
+	}
+	if got := migrated.Messages[len(migrated.Messages)-1].Content; got != "event tail" {
+		t.Fatalf("migrated tail = %q, want event tail", got)
+	}
+}
+
 func TestMigrateLegacySessionsBackfillsAlongsideExisting(t *testing.T) {
 	src := t.TempDir()
 	dest := t.TempDir()
@@ -102,6 +136,32 @@ func TestMigrateLegacySessionsRunsOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, legacyImportMarker)); err != nil {
 		t.Errorf("legacy compatibility import marker missing: %v", err)
+	}
+}
+
+func TestMigrateLegacySessionsFromExplicitDirIgnoresDefaultMarkers(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "custom-install.jsonl"), []byte(legacyMessageLog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeImportMarkers(dest, legacyRoutedHomeImportMarker, legacyJsonlPassMarker)
+
+	if n, err := MigrateLegacySessions(src, dest, nil); err != nil || n != 0 {
+		t.Fatalf("default migrate with markers: n=%d err=%v, want 0 nil", n, err)
+	}
+	n, err := MigrateLegacySessionsFromExplicitDir(src, dest, nil)
+	if err != nil {
+		t.Fatalf("explicit migrate: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("explicit imported %d sessions, want 1", n)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "custom-install.jsonl")); err != nil {
+		t.Fatalf("explicit imported session missing: %v", err)
+	}
+	if n, err := MigrateLegacySessionsFromExplicitDir(src, dest, nil); err != nil || n != 0 {
+		t.Fatalf("explicit migrate should be source-marker idempotent: n=%d err=%v", n, err)
 	}
 }
 

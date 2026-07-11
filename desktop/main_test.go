@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
 // TestMain isolates user config/state/cache dirs for the whole package. Without
@@ -20,6 +24,12 @@ func TestMain(m *testing.M) {
 	os.Setenv("REASONIX_STATE_HOME", dir+"/state")
 	os.Setenv("REASONIX_CACHE_HOME", dir+"/cache")
 	os.Setenv("AppData", dir)
+	// Neutralize the Wails runtime-event bridge for the whole test binary:
+	// outside a running Wails app, runtime.EventsEmit log.Fatals on the plain
+	// contexts tests use, killing the process from any emitting code path.
+	// Tests that assert on runtime events install their own capture through
+	// the per-instance runtimeEvents.emit hook, which takes precedence.
+	runtimeEventsEmitFallback = func(context.Context, string, ...interface{}) {}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -58,5 +68,35 @@ func TestWindowsWebview2GPUDisabled(t *testing.T) {
 				t.Fatalf("windowsWebview2GPUDisabled() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLinuxWebviewGpuPolicyDisablesGpuWithoutAccessibleRenderNode(t *testing.T) {
+	glob := filepath.Join(t.TempDir(), "renderD*")
+
+	if got := linuxWebviewGpuPolicy(glob); got != linux.WebviewGpuPolicyNever {
+		t.Fatalf("linuxWebviewGpuPolicy() = %v, want %v", got, linux.WebviewGpuPolicyNever)
+	}
+}
+
+func TestLinuxWebviewGpuPolicyDisablesGpuForInaccessibleRenderNode(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "renderD128"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := linuxWebviewGpuPolicy(filepath.Join(dir, "renderD*")); got != linux.WebviewGpuPolicyNever {
+		t.Fatalf("linuxWebviewGpuPolicy() = %v, want %v", got, linux.WebviewGpuPolicyNever)
+	}
+}
+
+func TestLinuxWebviewGpuPolicyKeepsOnDemandWithAccessibleRenderNode(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "renderD128"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := linuxWebviewGpuPolicy(filepath.Join(dir, "renderD*")); got != linux.WebviewGpuPolicyOnDemand {
+		t.Fatalf("linuxWebviewGpuPolicy() = %v, want %v", got, linux.WebviewGpuPolicyOnDemand)
 	}
 }

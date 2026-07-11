@@ -14,6 +14,12 @@ func TestTaskWarrantsPlanner(t *testing.T) {
 		{"", false},
 		{"   ", false},
 		{"/init", false},
+		{"1", false},
+		{"2.", false},
+		{"A", false},
+		{"好的", false},
+		{"继续", false},
+		{"选 1", false},
 		{"what does this function do?", false}, // low-risk question → executor only
 		{"why did the test fail", false},
 		{"解释一下这段代码", false},
@@ -22,6 +28,10 @@ func TestTaskWarrantsPlanner(t *testing.T) {
 		{reasoningLanguageBlock("en") + "\n\nfix the bug", true},
 		{"fix the bug", true},        // terse, but a work request → still planned
 		{"add a login button", true}, // ditto
+		{"执行修复", true},
+		{"开始迁移", true},
+		{"继续重构", true},
+		{"continue fixing tests", true},
 		{"implement the new caching layer across the backend", true},
 		{"who wrote this file?", false},
 		{"where is the config file?", false},
@@ -109,29 +119,51 @@ func TestNewPlannerGateNilClassifierFallback(t *testing.T) {
 	if gate == nil {
 		t.Fatal("NewPlannerGate(nil) returned nil")
 	}
-	if got := gate("what is this?"); got {
+	if got := gate(context.Background(), "what is this?"); got {
 		t.Error("nil classifier gate should skip low-risk questions")
 	}
-	if got := gate("fix the bug"); !got {
+	if got := gate(context.Background(), "fix the bug"); !got {
 		t.Error("nil classifier gate should plan work requests")
 	}
 }
 
 func TestNewPlannerGateWithClassifier(t *testing.T) {
 	gate := NewPlannerGate(&mockAutoPlanClassifier{needsPlan: false})
-	if got := gate("fix the bug"); got {
+	if got := gate(context.Background(), "fix the bug"); got {
 		t.Error("classifier said no plan, gate should return false")
 	}
 
 	gate = NewPlannerGate(&mockAutoPlanClassifier{needsPlan: true})
-	if got := gate("fix the bug"); !got {
+	if got := gate(context.Background(), "fix the bug"); !got {
 		t.Error("classifier said plan, gate should return true")
 	}
 }
 
 func TestNewPlannerGateClassifierFailureFallsBackToPlanning(t *testing.T) {
 	gate := NewPlannerGate(&mockAutoPlanClassifier{err: errors.New("bad json")})
-	if got := gate("fix the bug"); !got {
+	if got := gate(context.Background(), "fix the bug"); !got {
 		t.Error("classifier failure should fall back to planning for work requests")
+	}
+}
+
+type ctxCapturingClassifier struct{ sawTurnValue bool }
+
+func (c *ctxCapturingClassifier) NeedsPlan(ctx context.Context, _ string, _ int) (bool, string, error) {
+	c.sawTurnValue = ctx.Value(plannerGateTestCtxKey{}) != nil
+	return false, "", nil
+}
+
+type plannerGateTestCtxKey struct{}
+
+// TestNewPlannerGateThreadsTurnContextIntoClassifier pins that the borderline
+// classifier call derives from the turn context (so user cancellation stops it)
+// rather than from context.Background().
+func TestNewPlannerGateThreadsTurnContextIntoClassifier(t *testing.T) {
+	cls := &ctxCapturingClassifier{}
+	gate := NewPlannerGate(cls)
+	ctx := context.WithValue(context.Background(), plannerGateTestCtxKey{}, "turn")
+	gate(ctx, "fix the bug")
+	if !cls.sawTurnValue {
+		t.Fatal("classifier context does not derive from the turn context")
 	}
 }

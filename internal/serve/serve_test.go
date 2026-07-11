@@ -15,6 +15,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/eventwire"
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 )
@@ -30,7 +31,7 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 	bc := NewBroadcaster()
 	got := make(chan string, 1)
 	ctrl := control.New(control.Options{Runner: fakeRunner{got: got}, Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	sub, cancel := bc.Subscribe() // observe the broadcast deterministically
@@ -58,7 +59,7 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 	for {
 		select {
 		case data := <-sub:
-			var w wireEvent
+			var w eventwire.Event
 			if err := json.Unmarshal(data, &w); err == nil && w.Kind == "turn_done" {
 				return
 			}
@@ -71,7 +72,7 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 func TestServeEndpoints(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc}) // no runner needed for these
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	if resp, err := http.Get(srv.URL + "/history"); err != nil || resp.StatusCode != 200 {
@@ -119,7 +120,7 @@ func TestServeSubmitRejectsShellShortcut(t *testing.T) {
 	bc := NewBroadcaster()
 	got := make(chan string, 1)
 	ctrl := control.New(control.Options{Runner: fakeRunner{got: got}, Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/submit", "application/json", strings.NewReader(`{"input":"!echo nope"}`))
@@ -160,7 +161,7 @@ func TestHistoryMessagesPreserveToolDetails(t *testing.T) {
 	}
 }
 
-func TestPreviewSessionFileStripsTransientReasoningLanguageBlock(t *testing.T) {
+func TestSessionsListPreviewStripsTransientReasoningLanguageBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	s := agent.NewSession("system")
@@ -169,7 +170,7 @@ func TestPreviewSessionFileStripsTransientReasoningLanguageBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preview, turns := previewSessionFile(path)
+	preview, turns := agent.SessionPreview(path)
 	if turns != 1 {
 		t.Errorf("turns = %d, want 1", turns)
 	}
@@ -178,10 +179,34 @@ func TestPreviewSessionFileStripsTransientReasoningLanguageBlock(t *testing.T) {
 	}
 }
 
+func TestSessionsListPreviewSeesEventLogTurns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	s := agent.NewSession("system")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// The second turn lives only in the event log; a checkpoint-only reader
+	// would still report one turn.
+	if _, turns := agent.SessionPreview(path); turns != 2 {
+		t.Errorf("turns = %d, want 2 (event log turns visible)", turns)
+	}
+	if mod := agent.SessionContentModTime(path); mod.IsZero() {
+		t.Error("SessionContentModTime returned zero for a live session")
+	}
+}
+
 func TestServeCancelEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/cancel", "application/json", nil)
@@ -197,7 +222,7 @@ func TestServeCancelEndpoint(t *testing.T) {
 func TestServeApproveMissingID(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	// Missing id should return 400.
@@ -221,7 +246,7 @@ func TestServeApproveMissingID(t *testing.T) {
 func TestServeNewSessionEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/new", "application/json", nil)
@@ -237,7 +262,7 @@ func TestServeNewSessionEndpoint(t *testing.T) {
 func TestServeCompactEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/compact", "application/json", nil)
@@ -253,7 +278,7 @@ func TestServeCompactEndpoint(t *testing.T) {
 func TestServeIndexPage(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/")
@@ -282,6 +307,20 @@ func TestServeIndexDefinesQueryHelpers(t *testing.T) {
 	}
 }
 
+func TestServeIndexHandlesRetryingEvents(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		"case 'retrying': setRetrying(e.retryAttempt,e.retryMax); break;",
+		"if(e.kind!=='retrying')clearRetrying();",
+		"'retrying_status': 'Retrying ({attempt}/{max})...'",
+		"'retrying_status': '正在重试 ({attempt}/{max})...'",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("serve index missing retrying support %q", want)
+		}
+	}
+}
+
 func TestServeIndexPagePassesLanguagePreferenceToClient(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -290,7 +329,7 @@ func TestServeIndexPagePassesLanguagePreferenceToClient(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/")
@@ -335,6 +374,124 @@ func TestServeIndexPagePassesLanguagePreferenceToClient(t *testing.T) {
 	}
 }
 
+func TestServeModelsMarksActiveByModelRef(t *testing.T) {
+	writeServeModelConfig(t)
+
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{
+		Sink:     bc,
+		Label:    "shared-chat",
+		ModelRef: "alternate/shared-chat",
+	})
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("models status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Current string `json:"current"`
+		Models  []struct {
+			Ref    string `json:"ref"`
+			Active bool   `json:"active"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode models: %v", err)
+	}
+	if body.Current != "alternate/shared-chat" {
+		t.Fatalf("current = %q, want alternate/shared-chat", body.Current)
+	}
+	active := map[string]bool{}
+	for _, m := range body.Models {
+		active[m.Ref] = m.Active
+	}
+	if active["default/shared-chat"] {
+		t.Fatal("default provider was marked active even though the controller is on alternate/shared-chat")
+	}
+	if !active["alternate/shared-chat"] {
+		t.Fatal("alternate/shared-chat was not marked active")
+	}
+}
+
+func TestServeSwitchEffortUsesModelRefForDuplicateModelNames(t *testing.T) {
+	writeServeModelConfig(t)
+
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{
+		Sink:       bc,
+		Label:      "shared-chat",
+		ModelRef:   "alternate/shared-chat",
+		SessionDir: t.TempDir(),
+	})
+	server := New(ctrl, bc, config.ServeConfig{})
+	var builtRef string
+	server.buildController = func(_ context.Context, ref string) (*control.Controller, error) {
+		builtRef = ref
+		return control.New(control.Options{
+			Sink:       bc,
+			Label:      "shared-chat",
+			ModelRef:   ref,
+			SessionDir: t.TempDir(),
+		}), nil
+	}
+
+	if err := server.switchEffort(context.Background(), "high"); err != nil {
+		t.Fatalf("switchEffort: %v", err)
+	}
+	if builtRef != "alternate/shared-chat" {
+		t.Fatalf("rebuilt model ref = %q, want alternate/shared-chat", builtRef)
+	}
+	edit := config.LoadForEdit(config.UserConfigPath())
+	def, _ := edit.Provider("default")
+	if def.Effort != "" {
+		t.Fatalf("default effort = %q, want unchanged", def.Effort)
+	}
+	alt, _ := edit.Provider("alternate")
+	if alt.Effort != "high" {
+		t.Fatalf("alternate effort = %q, want high", alt.Effort)
+	}
+}
+
+func writeServeModelConfig(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	cfgPath := config.UserConfigPath()
+	if cfgPath == "" {
+		t.Fatal("user config path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `default_model = "default/shared-chat"
+
+[[providers]]
+name = "default"
+kind = "openai"
+base_url = "http://127.0.0.1:1/v1"
+models = ["shared-chat"]
+default = "shared-chat"
+supported_efforts = ["low", "high"]
+
+[[providers]]
+name = "alternate"
+kind = "openai"
+base_url = "http://127.0.0.1:2/v1"
+models = ["shared-chat"]
+default = "shared-chat"
+supported_efforts = ["low", "high"]
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResumeRequiresSessionPathInsideSessionDir(t *testing.T) {
 	dir := t.TempDir()
 	active := filepath.Join(dir, "active.jsonl")
@@ -349,7 +506,7 @@ func TestResumeRequiresSessionPathInsideSessionDir(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	post := func(path string) int {
@@ -394,7 +551,7 @@ func TestResumeRejectsCleanupPendingSession(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	body, err := json.Marshal(map[string]string{"path": pending})
@@ -429,7 +586,7 @@ func TestSessionsSkipsCleanupPending(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/sessions")
@@ -478,7 +635,7 @@ func TestDeleteSessionRequiresSessionNameInsideSessionDir(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	post := func(body string) int {
@@ -545,7 +702,7 @@ func writeServeSubagentArtifact(t *testing.T, dir, ref, parentSession string) {
 func TestServeSubmitMalformedJSON(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/submit", "application/json", strings.NewReader(`{not json`))
@@ -561,7 +718,7 @@ func TestServeSubmitMalformedJSON(t *testing.T) {
 func TestServePlanMalformedJSON(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/plan", "application/json", strings.NewReader(`{bad`))
@@ -577,7 +734,7 @@ func TestServePlanMalformedJSON(t *testing.T) {
 func TestServeContextEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc).Handler())
+	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/context")

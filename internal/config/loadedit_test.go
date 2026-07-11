@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 func TestLoadForEdit(t *testing.T) {
@@ -35,6 +37,31 @@ api_key_env = "X_KEY"
 	// Missing file: falls back to the built-in defaults.
 	if cfg := LoadForEdit(filepath.Join(dir, "absent.toml")); cfg.DefaultModel != Default().DefaultModel {
 		t.Errorf("missing-file default = %q, want %q", cfg.DefaultModel, Default().DefaultModel)
+	}
+}
+
+func TestLoadForEditDecodesGB18030TOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `default_model = "local/中文模型"
+
+[[providers]]
+name = "local"
+kind = "openai"
+base_url = "https://example.com/v1"
+model = "中文模型"
+api_key_env = "LOCAL_KEY"
+`
+	if err := os.WriteFile(path, fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadForEdit(path)
+	if cfg.DefaultModel != "local/中文模型" {
+		t.Fatalf("default_model = %q", cfg.DefaultModel)
+	}
+	if len(cfg.Providers) != 1 || cfg.Providers[0].Model != "中文模型" {
+		t.Fatalf("providers = %+v, want decoded Chinese model", cfg.Providers)
 	}
 }
 
@@ -73,9 +100,10 @@ model = "m"
 	}
 }
 
-func TestLoadForEditLoadsDotEnvNextToEditedProjectConfig(t *testing.T) {
+func TestLoadForEditIgnoresProjectDotEnvForProviderCredentials(t *testing.T) {
 	project := t.TempDir()
 	launch := t.TempDir()
+	home := t.TempDir()
 	path := filepath.Join(project, "reasonix.toml")
 	body := `default_model = "custom/m"
 [[providers]]
@@ -92,6 +120,10 @@ api_key_env = "PROJECT_ONLY_KEY"
 		t.Fatal(err)
 	}
 	t.Chdir(launch)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Setenv("PROJECT_ONLY_KEY", "")
 	os.Unsetenv("PROJECT_ONLY_KEY")
 
@@ -100,10 +132,10 @@ api_key_env = "PROJECT_ONLY_KEY"
 	if !ok {
 		t.Fatalf("provider missing from edited config: %+v", cfg.Providers)
 	}
-	if !provider.Configured() {
-		t.Fatalf("provider should resolve api_key_env from project .env next to edited config")
+	if provider.Configured() {
+		t.Fatalf("provider should not resolve api_key_env from project .env next to edited config")
 	}
-	if got := ResolveCredentialForRoot(project, "PROJECT_ONLY_KEY"); !got.Set || got.Value != "from-project" {
-		t.Fatalf("credential = %+v, want project .env value", got)
+	if got := ResolveCredentialForRootGlobalFirst(project, "PROJECT_ONLY_KEY"); got.Set {
+		t.Fatalf("credential = %+v, want project .env ignored for provider key", got)
 	}
 }

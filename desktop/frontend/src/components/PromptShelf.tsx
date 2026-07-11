@@ -1,6 +1,8 @@
 import type { ReactNode, RefObject } from "react";
 
 export function PromptShelf({
+  className,
+  cardClassName,
   titleId,
   title,
   badges,
@@ -8,11 +10,14 @@ export function PromptShelf({
   actions,
   children,
   crumbs,
+  note,
   quickActions,
   headerActions,
   barRef,
   role = "dialog",
 }: {
+  className?: string;
+  cardClassName?: string;
   titleId: string;
   title: ReactNode;
   badges?: ReactNode;
@@ -20,16 +25,19 @@ export function PromptShelf({
   actions?: ReactNode;
   children?: ReactNode;
   crumbs?: ReactNode;
+  // Rendered between the actions grid and the quick actions; used for
+  // focus-following detail previews and similar footnotes.
+  note?: ReactNode;
   quickActions?: ReactNode;
   headerActions?: ReactNode;
   barRef?: RefObject<HTMLDivElement | null>;
   role?: "dialog" | "region";
 }) {
   return (
-    <div className="prompt-shelf" aria-live="polite">
+    <div className={["prompt-shelf", className ?? ""].filter(Boolean).join(" ")} aria-live="polite">
       <div
         ref={barRef}
-        className="prompt-shelf__card"
+        className={["prompt-shelf__card", cardClassName ?? ""].filter(Boolean).join(" ")}
         role={role}
         aria-modal={role === "dialog" ? "false" : undefined}
         aria-labelledby={titleId}
@@ -48,6 +56,7 @@ export function PromptShelf({
         {crumbs}
         {children && <div className="prompt-shelf__body">{children}</div>}
         {actions && <div className="prompt-shelf__actions">{actions}</div>}
+        {note && <div className="prompt-shelf__footnote">{note}</div>}
         {quickActions && <div className="prompt-shelf__quick-actions">{quickActions}</div>}
       </div>
     </div>
@@ -88,6 +97,8 @@ export function PromptAction({
   description,
   onClick,
   ariaLabel,
+  title,
+  onHoverChange,
   primary = false,
   selected = false,
   quiet = false,
@@ -98,6 +109,11 @@ export function PromptAction({
   description?: ReactNode;
   onClick: () => void;
   ariaLabel?: string;
+  // Native tooltip fallback for truncated descriptions.
+  title?: string;
+  // Fires on mouse enter/focus (true) and mouse leave/blur (false) so the
+  // parent can drive a focus-following detail preview.
+  onHoverChange?: (hovering: boolean) => void;
   primary?: boolean;
   selected?: boolean;
   quiet?: boolean;
@@ -117,6 +133,11 @@ export function PromptAction({
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
+      title={title}
+      onMouseEnter={onHoverChange ? () => onHoverChange(true) : undefined}
+      onMouseLeave={onHoverChange ? () => onHoverChange(false) : undefined}
+      onFocus={onHoverChange ? () => onHoverChange(true) : undefined}
+      onBlur={onHoverChange ? () => onHoverChange(false) : undefined}
     >
       {keyLabel && <span className="prompt-action__key">{keyLabel}</span>}
       {hasCopy && (

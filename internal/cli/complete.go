@@ -64,6 +64,7 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/compact", insert: "/compact ", hint: i18n.M.CmdCompact},
 		{label: "/new", insert: "/new ", hint: i18n.M.CmdNew},
 		{label: "/clear", insert: "/clear", hint: i18n.M.CmdClear},
+		{label: "/cls", insert: "/cls", hint: i18n.M.CmdCls},
 		{label: "/resume", insert: "/resume ", hint: i18n.M.CmdResume},
 		{label: "/rename", insert: "/rename ", hint: i18n.M.CmdRename},
 		{label: "/rewind", insert: "/rewind", hint: i18n.M.CmdRewind},
@@ -71,18 +72,22 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/branch", insert: "/branch ", hint: i18n.M.CmdBranch},
 		{label: "/switch", insert: "/switch ", hint: i18n.M.CmdSwitchBranch},
 		{label: "/mcp", insert: "/mcp", hint: i18n.M.CmdMcp},
+		{label: "/plugins", insert: "/plugins", hint: i18n.M.CmdPlugins},
 		{label: "/model", insert: "/model ", hint: i18n.M.CmdModel, descend: true},
 		{label: "/provider", insert: "/provider ", hint: i18n.M.CmdProvider, descend: true},
 		{label: "/skills", insert: "/skills", hint: i18n.M.CmdSkill},
+		{label: "/reload-cmd", insert: "/reload-cmd", hint: i18n.M.CmdReloadCmd},
 		{label: "/hooks", insert: "/hooks ", hint: i18n.M.CmdHooks, descend: true},
 		{label: "/paste-image", insert: "/paste-image", hint: i18n.M.CmdPasteImage},
 		{label: "/output-style", insert: "/output-style", hint: i18n.M.CmdOutputStyle},
 		{label: "/verbose", insert: "/verbose", hint: i18n.M.CmdVerbose},
+		{label: "/mouse", insert: "/mouse", hint: i18n.M.CmdMouse},
 		{label: "/diff-fold", insert: "/diff-fold", hint: i18n.M.CmdDiffFold},
 		{label: "/sandbox", insert: "/sandbox", hint: i18n.M.CmdSandbox},
 		{label: "/effort", insert: "/effort ", hint: i18n.M.CmdEffort, descend: true},
 		{label: "/auto-plan", insert: "/auto-plan ", hint: i18n.M.CmdAutoPlan, descend: true},
 		{label: "/reasoning-language", insert: "/reasoning-language ", hint: i18n.M.CmdReasonLang, descend: true},
+		{label: "/memory-v5", insert: "/memory-v5 ", hint: i18n.M.CmdMemoryV5, descend: true},
 		{label: "/theme", insert: "/theme ", hint: i18n.M.CmdTheme, descend: true},
 		{label: "/language", insert: "/language ", hint: i18n.M.CmdLanguage, descend: true},
 		{label: "/help", insert: "/help ", hint: i18n.M.CmdHelp},
@@ -93,6 +98,8 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/forget", insert: "/forget ", hint: i18n.M.CmdForget},
 		{label: "/quit", insert: "/quit", hint: i18n.M.CmdQuit},
 		{label: "/loop", insert: "/loop ", hint: i18n.M.CmdLoop},
+		{label: "/copy", insert: "/copy", hint: i18n.M.CmdCopy},
+		{label: "/export", insert: "/export", hint: i18n.M.CmdExport},
 	}
 	for _, c := range m.commands {
 		items = append(items, compItem{label: "/" + c.Name, insert: "/" + c.Name + " ", hint: c.Description})
@@ -187,6 +194,7 @@ func (m *chatTUI) slashArgData() control.ArgData {
 		CurrentModel:    m.modelRef,
 		ProviderNames:   providerNames(),
 		CurrentProvider: curProvider,
+		PluginNames:     pluginArgNames(),
 	}
 	if m.ctrl != nil {
 		data.DisabledSkills = m.ctrl.DisabledSkills()
@@ -205,7 +213,7 @@ func (m *chatTUI) explicitSubcommandItems(val string) ([]compItem, int, bool) {
 		return nil, 0, false
 	}
 	switch cmd {
-	case "/mcp", "/skill", "/skills":
+	case "/mcp", "/skill", "/skills", "/plugin", "/plugins":
 	default:
 		return nil, 0, false
 	}
@@ -229,7 +237,7 @@ func (m *chatTUI) bareSubcommandSpace(val string) bool {
 		return false
 	}
 	switch fields[0] {
-	case "/mcp", "/skill", "/skills":
+	case "/mcp", "/skill", "/skills", "/plugin", "/plugins":
 		return true
 	default:
 		return false
@@ -255,6 +263,9 @@ func (m *chatTUI) branchArgItems(val string) ([]compItem, int, bool) {
 		return nil, from, true
 	}
 	branches, err := m.ctrl.Branches()
+	// Branches snapshots first, which can retarget the controller to a
+	// recovery branch; keep the lease on whatever the controller now owns.
+	m.followSessionLease()
 	if err != nil {
 		return nil, from, true
 	}

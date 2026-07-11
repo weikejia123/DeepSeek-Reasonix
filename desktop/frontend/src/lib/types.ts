@@ -17,9 +17,12 @@ export type EventKind =
   | "turn_done"
   | "compaction_started"
   | "compaction_done"
+  | "mcp_surface_ready"
   | "retrying"
   | "steer"
-  | "user_message";
+  | "user_message"
+  | "memory_compiler_stats"
+  | "guardian_assessment";
 
 export interface WireCompaction {
   trigger?: string; // "auto" | "manual"
@@ -50,6 +53,18 @@ export interface WireTool {
   profile?: WireProfile; // subagent model/effort resolved for this call
 }
 
+export interface WireCacheDiagnostics {
+  prefixHash: string;
+  prefixChanged: boolean;
+  prefixChangeReasons?: string[];
+  systemHash: string;
+  toolsHash: string;
+  logRewriteVersion: number;
+  toolSchemaTokens: number;
+  cacheMissTokens: number;
+  cacheHitTokens: number;
+}
+
 export interface WireUsage {
   promptTokens: number;
   completionTokens: number;
@@ -58,6 +73,7 @@ export interface WireUsage {
   cacheMissTokens: number;
   reasoningTokens?: number;
   source?: string;
+  cacheDiagnostics?: WireCacheDiagnostics;
   // Session-cumulative cache tokens — the status bar shows the aggregate
   // hit-rate (Σhit/Σ(hit+miss)), steadier than the single-turn cacheHitTokens.
   sessionCacheHitTokens: number;
@@ -72,6 +88,19 @@ export interface WireApproval {
   id: string;
   tool: string;
   subject: string;
+  reason?: string;
+}
+
+export interface WireGuardian {
+  id: string;
+  tool: string;
+  subject: string;
+  outcome: string;
+  risk_level?: string;
+  user_authorization?: string;
+  rationale?: string;
+  duration_ms?: number;
+  usage?: WireUsage;
 }
 
 export interface WireAskOption {
@@ -98,16 +127,46 @@ export interface QuestionAnswer {
   selected: string[];
 }
 
+export interface MemoryCitation {
+  id?: string;
+  source: string;
+  lineStart?: number;
+  lineEnd?: number;
+  note?: string;
+  kind?: string;
+}
+
+export interface MemoryCompilerStats {
+  injected: boolean;
+  usefulIR: boolean;
+  compiledTokens: number;
+  irOverheadTokens: number;
+  memoryReferences: number;
+  constraints: number;
+  riskNotes: number;
+  executionSteps: number;
+  totalNodes: number;
+  highSignalNodes: number;
+  toolResultNodes: number;
+  decisionNodes: number;
+  strategyCount: number;
+  learningCount: number;
+}
+
 export interface WireEvent {
   kind: EventKind;
   text?: string;
+  detail?: string;
   reasoning?: string;
+  memoryCitations?: MemoryCitation[];
+  memoryCompiler?: MemoryCompilerStats;
   level?: "info" | "warn";
   tool?: WireTool;
   usage?: WireUsage;
   approval?: WireApproval;
   ask?: WireAsk;
   compaction?: WireCompaction;
+  guardian?: WireGuardian;
   err?: string;
   retryAttempt?: number;
   retryMax?: number;
@@ -151,6 +210,11 @@ export interface TabMeta {
   goal?: string;
   goalStatus?: GoalStatus;
   loopActive?: boolean;
+  autoResearch?: AutoResearchCompactView;
+  recovered?: boolean;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
   startupErr?: string;
   active: boolean;
   cwd: string;
@@ -171,6 +235,10 @@ export interface ProjectNode {
   running?: boolean;
   status?: ProjectTopicStatus;
   pinned?: boolean;
+  recovered?: boolean;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
   children?: ProjectNode[];
 }
 
@@ -182,6 +250,23 @@ export interface TopicMeta {
   createdAt: number;
 }
 
+export interface SessionRecoveryEvent {
+  originalPath?: string;
+  recoveryPath: string;
+  scope?: string;
+  workspaceRoot?: string;
+  topicId?: string;
+  topicTitle?: string;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
+  existing?: boolean;
+}
+
+export interface SessionRecoveryFailedEvent {
+  reason?: "lease_held" | "lease_unavailable" | string;
+}
+
 export interface ContextPanelInfo {
   usedTokens: number;
   windowTokens: number;
@@ -191,6 +276,9 @@ export interface ContextPanelInfo {
   reasoningTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  sessionCacheHitTokens: number;
+  sessionCacheMissTokens: number;
+  sessionCompletionTokens: number;
   requestCount?: number;
   elapsedMs?: number;
   sessionCost?: number;
@@ -239,9 +327,13 @@ export interface ChangedFileInfo {
 export interface HistoryMessage {
   role: string;
   content: string;
+  detail?: string;
   submitText?: string;
+  checkpointTurn?: number;
   createdAt?: number;
   reasoning?: string;
+  workDurationMs?: number;
+  memoryCitations?: MemoryCitation[];
   level?: "info" | "warn";
   toolCalls?: HistoryToolCall[];
   toolCallId?: string;
@@ -267,6 +359,14 @@ export interface HistoryToolCall {
   argumentsArchived?: boolean;
 }
 
+export interface HistoryPage {
+  messages: HistoryMessage[];
+  startTurn: number;
+  endTurn: number;
+  totalTurns: number;
+  hasOlder: boolean;
+}
+
 export interface PromptHistoryEntry {
   text: string;
   at: number;          // unix ms
@@ -286,6 +386,9 @@ export interface CheckpointMeta {
   turn: number;
   prompt: string;
   files: string[];
+  fileCount?: number;
+  filesTruncated?: boolean;
+  turnFileCount?: number;
   time: number; // unix ms
   canCode?: boolean;
   canConversation?: boolean;
@@ -315,6 +418,8 @@ export interface SessionMeta {
   userId?: string;
   threadId?: string;
   sessionSource?: string;
+  recovered?: boolean; // created by conflict recovery, including a continued branch
+  recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
 }
 
 // SessionReference is a session selected via @ past:chats for context injection.
@@ -338,6 +443,11 @@ export interface ContextInfo {
   window: number;
   sessionTokens: number;
   compactRatio?: number;
+  sessionCost?: number;
+  sessionCurrency?: string;
+  cacheHitTokens?: number;
+  cacheMissTokens?: number;
+  sources?: Record<string, UsageSourceStats>;
 }
 
 export interface Meta {
@@ -349,7 +459,9 @@ export interface Meta {
   workspaceRoot?: string;
   workspaceName?: string;
   workspacePath?: string;
+  sessionPath?: string;
   gitBranch?: string;
+  imageInputEnabled?: boolean;
   autoApproveTools?: boolean;
   bypass?: boolean; // legacy JSON key for YOLO/full-access tool auto-approval
   collaborationMode?: CollaborationMode;
@@ -357,12 +469,62 @@ export interface Meta {
   tokenMode?: TokenMode;
   goal?: string;
   goalStatus?: GoalStatus;
+  autoResearch?: AutoResearchCompactView;
 }
 
 export type CollaborationMode = "normal" | "plan" | "goal";
 export type ToolApprovalMode = "ask" | "auto" | "yolo";
 export type TokenMode = "full" | "economy";
 export type GoalStatus = "running" | "complete" | "blocked" | "stopped";
+
+export interface AutoResearchCompactView {
+  taskId: string;
+  status: "running" | "blocked" | "complete" | "stopped" | "invalid";
+  iteration: number;
+  pivotRequired: boolean;
+  staleCount: number;
+}
+
+export interface AutoResearchCriterionView {
+  id: string;
+  description: string;
+  required: boolean;
+  evidenceCount: number;
+  status: string;
+}
+
+export interface AutoResearchStatusView extends AutoResearchCompactView {
+  goal: string;
+  currentDirection: string;
+  pivotCount: number;
+  lastHeartbeatAt: string;
+  findingCount: number;
+  openCriteria: AutoResearchCriterionView[];
+  blocker: string;
+  taskPath: string;
+  nextRequiredAction: string;
+}
+
+export interface AutoResearchFindingView {
+  id: string;
+  kind: string;
+  summary: string;
+  source: string;
+  command?: string;
+  paths?: string[];
+  accepted: boolean;
+  createdAt: string;
+}
+
+export interface AutoResearchEvidenceView {
+  id: string;
+  kind: string;
+  summary: string;
+  source: string;
+  command?: string;
+  paths?: string[];
+  accepted: boolean;
+}
 
 export function normalizeCollaborationMode(mode?: string, goal?: string, legacyMode?: Mode): CollaborationMode {
   if (mode === "plan" || mode === "goal" || mode === "normal") return mode;
@@ -371,9 +533,16 @@ export function normalizeCollaborationMode(mode?: string, goal?: string, legacyM
   return "normal";
 }
 
-export function normalizeToolApprovalMode(mode?: string, legacyMode?: Mode, legacyAutoApproveTools?: boolean): ToolApprovalMode {
-  if (mode === "auto" || mode === "yolo" || mode === "ask") return mode;
+export function normalizeToolApprovalMode(
+  mode?: string,
+  legacyMode?: Mode,
+  legacyAutoApproveTools?: boolean,
+  fallbackMode?: ToolApprovalMode,
+): ToolApprovalMode {
+  const normalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+  if (normalized === "auto" || normalized === "yolo" || normalized === "ask") return normalized as ToolApprovalMode;
   if (legacyAutoApproveTools || (legacyMode && modeHasAutoApproveTools(legacyMode))) return "yolo";
+  if (fallbackMode === "auto" && normalized === "") return "auto";
   return "ask";
 }
 
@@ -425,13 +594,17 @@ export interface CommandInfo {
 
 export interface DirEntry {
   name: string;
+  path?: string;
   isDir: boolean;
+  displayName?: string;
+  displayPath?: string;
 }
 
 export interface DroppedItem {
   kind: "workspace" | "attachment";
   path: string;
   isDir?: boolean;
+  displayPath?: string;
   previewUrl?: string;
 }
 
@@ -498,18 +671,23 @@ export interface ServerView {
   args?: string[];
   url?: string;
   envKeys?: string[];
+  headerKeys?: string[];
   tools: number;
   prompts: number;
   resources: number;
+  hasTools?: boolean;
   error?: string;
   toolList?: MCPToolView[];
+  trustedReadOnlyTools?: string[];
   authStatus?: "none" | "possible" | "required" | string;
   authUrl?: string;
   authConfigured?: boolean;
+  managedByPlugin?: string;
 }
 export interface MCPToolView {
   name: string;
   description: string;
+  readOnlyHint?: boolean;
 }
 export interface SkillView {
   name: string;
@@ -539,10 +717,54 @@ export interface CapabilitiesView {
   servers: ServerView[];
   skills: SkillView[];
   skillRoots: SkillRootView[];
+  plugins: PluginView[];
 }
 export interface SkillsSettingsView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
+}
+export interface PluginView {
+  name: string;
+  version?: string;
+  description?: string;
+  source?: string;
+  root: string;
+  manifestKind?: string;
+  enabled: boolean;
+  skills: number;
+  hooks: number;
+  mcpServers: number;
+  skillDetails?: PluginSkillView[];
+  hookDetails?: PluginHookView[];
+  mcpServerDetails?: PluginMCPServerView[];
+  warnings?: string[];
+  error?: string;
+}
+export interface PluginSkillView {
+  name: string;
+  description?: string;
+  path?: string;
+  invocation?: string;
+  runAs?: string;
+}
+export interface PluginHookView {
+  event: string;
+  match?: string;
+  command?: string;
+  contextFile?: string;
+  description?: string;
+}
+export interface PluginMCPServerView {
+  name: string;
+  transport?: string;
+  command?: string;
+  url?: string;
+}
+export interface PluginInstallOptions {
+  dryRun?: boolean;
+  link?: boolean;
+  replace?: boolean;
+  name?: string;
 }
 export interface MCPServerInput {
   name: string;
@@ -551,6 +773,8 @@ export interface MCPServerInput {
   args: string[];
   url: string;
   env?: Record<string, string> | null;
+  headers?: Record<string, string> | null;
+  trustedReadOnlyTools?: string[];
 }
 
 export interface ModelInfo {
@@ -645,7 +869,7 @@ export interface MemoryView {
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
 
 // Settings panel payloads (desktop/settings_app.go).
 export interface ProviderView {
@@ -654,12 +878,16 @@ export interface ProviderView {
   added: boolean;
   kind: string;
   baseUrl: string;
+  chatUrl?: string; // optional full chat completions URL; empty derives from baseUrl
   models: string[];
   visionModels: string[]; // subset of models that accepts image input
   visionModelsConfigured: boolean; // true when an empty list is an explicit choice
   modelsUrl: string; // optional override for model discovery; empty derives from baseUrl
   default: string;
   apiKeyEnv: string;
+  headers?: Record<string, string> | null; // optional extra request headers for compatible gateways
+  extraBody?: Record<string, unknown> | null; // optional extra top-level request body fields for compatible gateways
+  authHeader?: boolean; // Anthropic-compatible: send Authorization: Bearer instead of x-api-key
   keySet: boolean; // the env var currently resolves to a value
   requiresKey?: boolean; // false for explicit no-auth providers
   configured?: boolean; // selectable: key is set or no key is required
@@ -668,8 +896,35 @@ export interface ProviderView {
   balanceUrl: string; // optional wallet-balance endpoint; "" disables the readout
   contextWindow: number;
   reasoningProtocol: string; // auto|deepseek|openai|none; empty = auto/model registry
+  thinking: string; // provider-specific thinking override: ""|enabled|disabled|adaptive
   supportedEfforts: string[]; // custom /effort levels; empty = use built-in Kind/BaseURL default
   defaultEffort: string; // /effort level when user picks "auto" or unset; "" = supportedEfforts[0]
+  modelOverrides?: ProviderModelOverrideView[] | null;
+}
+
+export interface ProviderPresetView {
+  id: string;
+  label: string;
+  description: string;
+  keyEnv: string;
+  providerNames: string[];
+  models: string[];
+  added: boolean;
+  status?: "available" | "installed" | "installed_modified" | "name_conflict" | "similar_existing";
+  statusProviderNames?: string[];
+  keySet: boolean;
+  requiresKey?: boolean;
+  configured?: boolean;
+  keySource?: string;
+  keySourcePath?: string;
+}
+
+export interface ProviderModelOverrideView {
+  model: string;
+  reasoningProtocol: string;
+  supportedEfforts: string[];
+  defaultEffort: string;
+  vision?: boolean | null;
 }
 
 // BalanceInfo is the wallet-balance readout (desktop/app.go Balance). available
@@ -702,7 +957,10 @@ export interface SandboxView {
   network: boolean;
   workspaceRoot: string;
   allowWrite: string[];
+  effectiveWorkspaceRoot: string;
+  effectiveWriteRoots: string[];
   shell: string; // "auto" | "bash" | "powershell" | "pwsh"
+  effectiveShell?: string; // "bash" | "git-bash" | "powershell" | "pwsh"
 }
 
 export interface NetworkProxyView {
@@ -724,6 +982,7 @@ export interface AgentView {
   temperature: number;
   maxSteps: number;
   plannerMaxSteps: number;
+  maxSubagentDepth: number;
   systemPrompt: string;
   coldResumePrune: boolean;
   reasoningLanguage: string; // "auto" | "zh" | "en"
@@ -735,9 +994,55 @@ export interface BotAllowlistView {
   qqUsers: string[];
   feishuUsers: string[];
   weixinUsers: string[];
+  qqApprovers: string[];
+  feishuApprovers: string[];
+  weixinApprovers: string[];
+  qqAdmins: string[];
+  feishuAdmins: string[];
+  weixinAdmins: string[];
   qqGroups: string[];
   feishuGroups: string[];
   weixinGroups: string[];
+}
+
+export interface BotAccessView {
+  enabled: boolean;
+  allowAll: boolean;
+  pairingEnabled: boolean;
+  users: string[];
+  groups: string[];
+  approvers: string[];
+  admins: string[];
+}
+
+export interface BotSelfUserIDsView {
+  qq: string[];
+  feishu: string[];
+  weixin: string[];
+}
+
+export interface BotPairingView {
+  enabled: boolean;
+  requestTtlMinutes: number;
+  maxPendingPerPlatform: number;
+}
+
+export interface BotControlView {
+  enabled: boolean;
+  addr: string;
+  tokenEnv: string;
+}
+
+export interface BotRouteView {
+  connectionId: string;
+  platform: string;
+  chatType: string;
+  chatId: string;
+  userId: string;
+  threadId: string;
+  model: string;
+  toolApprovalMode: ToolApprovalMode | "" | string;
+  workspaceRoot: string;
 }
 
 export interface QQBotView {
@@ -746,6 +1051,10 @@ export interface QQBotView {
   appSecretEnv: string;
   secretSet: boolean;
   sandbox: boolean;
+  model: string;
+  toolApprovalMode: ToolApprovalMode | "" | string;
+  workspaceRoot: string;
+  access: BotAccessView;
 }
 
 export interface FeishuBotView {
@@ -798,6 +1107,7 @@ export interface BotConnectionView {
   model: string;
   toolApprovalMode: ToolApprovalMode | "" | string;
   workspaceRoot: string;
+  access: BotAccessView;
   credential: BotConnectionCredentialView;
   sessionMappings: BotConnectionSessionMappingView[];
   lastError: string;
@@ -811,6 +1121,14 @@ export interface BotSettingsView {
   toolApprovalMode: ToolApprovalMode | "" | string;
   maxSteps: number;
   debounceMs: number;
+  queueMode: string;
+  queueCap: number;
+  queueDrop: string;
+  ignoreSelfMessages: boolean;
+  selfUserIds: BotSelfUserIDsView;
+  control: BotControlView;
+  pairing: BotPairingView;
+  routes: BotRouteView[];
   allowlist: BotAllowlistView;
   qq: QQBotView;
   feishu: FeishuBotView;
@@ -886,6 +1204,7 @@ export interface SettingsView {
   autoPlan: string;
   providers: ProviderView[];
   officialProviders: ProviderView[];
+  providerPresets: ProviderPresetView[];
   permissions: PermissionsView;
   sandbox: SandboxView;
   network: NetworkView;
@@ -899,9 +1218,11 @@ export interface SettingsView {
   displayMode: string;   // "standard" | "compact"
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
+  defaultToolApprovalMode: ToolApprovalMode | string; // default for newly-created sessions
   checkUpdates: boolean; // check for new versions on startup
   telemetry: boolean; // anonymous launch ping (install id + version + OS)
   metrics: boolean; // aggregate desktop metrics (anonymous signal/bucket counts)
+  memoryCompilerEnabled: boolean; // Memory v5 execution compiler
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
   autoApproveTools: boolean;

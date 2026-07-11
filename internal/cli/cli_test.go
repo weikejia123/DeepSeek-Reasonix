@@ -138,6 +138,32 @@ func TestServeResumeRejectsCleanupPending(t *testing.T) {
 	}
 }
 
+func TestServeRejectsUnknownAuthMode(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	errOut := captureStderr(t, func() {
+		if rc := runServe([]string{"--auth", "tokne", "--addr", "127.0.0.1:0"}); rc != 1 {
+			t.Fatalf("serve --auth tokne rc = %d, want 1", rc)
+		}
+	})
+	if !strings.Contains(errOut, "auth mode must be none, token, or password") {
+		t.Fatalf("serve --auth tokne stderr = %q, want auth mode validation", errOut)
+	}
+}
+
+func TestServePasswordAuthRequiresPasswordMaterial(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	errOut := captureStderr(t, func() {
+		if rc := runServe([]string{"--auth", "password", "--addr", "127.0.0.1:0"}); rc != 1 {
+			t.Fatalf("serve --auth password without password rc = %d, want 1", rc)
+		}
+	})
+	if !strings.Contains(errOut, "auth mode password requires --password or serve.password_hash") {
+		t.Fatalf("serve --auth password stderr = %q, want password material validation", errOut)
+	}
+}
+
 func TestReserveNativeScrollbackFrameWritesOnlyNewlines(t *testing.T) {
 	var b bytes.Buffer
 	reserveNativeScrollbackFrame(&b, 3)
@@ -240,7 +266,7 @@ func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
 	if !strings.Contains(out, "Usage:") && !strings.Contains(out, "用法：") {
 		t.Fatalf("help output missing usage:\n%s", out)
 	}
-	if !strings.Contains(out, "reasonix run  [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] <task>") {
+	if !strings.Contains(out, "reasonix run  [--model NAME] [--max-steps N] [-c|--continue] [--resume PATH] [--copy] <task>") {
 		t.Fatalf("help output missing run resume flags:\n%s", out)
 	}
 }
@@ -392,10 +418,35 @@ command = "legacy-bin"
 	if err != nil {
 		t.Fatalf("read migrated user config: %v", err)
 	}
-	for _, want := range []string{`config_version = 3`, `[desktop]`, `name    = "legacy-cli"`} {
+	for _, want := range []string{`config_version = 4`, `[desktop]`, `name    = "legacy-cli"`} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("migrated config missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestRunAppliesUserConfigUpgradesOnStartup(t *testing.T) {
+	isolateCLIConfigHome(t)
+	path := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("config_version = 2\ndefault_model = \"deepseek-flash\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		if rc := Run([]string{"mcp", "list"}, "test-version"); rc != 0 {
+			t.Fatalf("mcp list rc = %d, want 0", rc)
+		}
+	})
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read upgraded user config: %v", err)
+	}
+	if !strings.Contains(string(body), "config_version = 4") {
+		t.Fatalf("CLI startup should apply user config upgrades:\n%s", body)
 	}
 }
 
@@ -469,6 +520,67 @@ func TestConfigAutoPlanLocalIsRejected(t *testing.T) {
 	}
 	if cfg.Agent.AutoPlan != "off" {
 		t.Fatalf("auto_plan = %q, want global off", cfg.Agent.AutoPlan)
+	}
+}
+
+func TestConfigMemoryV5CommandWritesUserConfig(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	out := captureStdout(t, func() {
+		if rc := Run([]string{"config", "memory-v5", "off"}, "test-version"); rc != 0 {
+			t.Fatalf("config memory-v5 rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, "memory_compiler.enabled = false") {
+		t.Fatalf("config memory-v5 output = %q", out)
+	}
+	if !strings.Contains(out, `memory_compiler.verbosity = "observe"`) {
+		t.Fatalf("config memory-v5 output missing verbosity = %q", out)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.MemoryCompilerEnabled() {
+		t.Fatalf("saved memory_compiler.enabled = true, want false")
+	}
+	if got := cfg.MemoryCompilerVerbosity(); got != config.MemoryCompilerVerbosityObserve {
+		t.Fatalf("saved memory_compiler.verbosity = %q, want observe", got)
+	}
+
+	out = captureStdout(t, func() {
+		if rc := Run([]string{"config", "memory-v5", "status"}, "test-version"); rc != 0 {
+			t.Fatalf("config memory-v5 status rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, "memory_compiler.enabled = false") {
+		t.Fatalf("config memory-v5 status output = %q", out)
+	}
+	if !strings.Contains(out, `memory_compiler.verbosity = "observe"`) {
+		t.Fatalf("config memory-v5 status output = %q", out)
+	}
+
+	out = captureStdout(t, func() {
+		if rc := Run([]string{"config", "memory-v5", "compact"}, "test-version"); rc != 0 {
+			t.Fatalf("config memory-v5 compact rc = %d, want 0", rc)
+		}
+	})
+	if !strings.Contains(out, "memory_compiler.enabled = true") ||
+		!strings.Contains(out, `memory_compiler.verbosity = "compact"`) {
+		t.Fatalf("config memory-v5 compact output = %q", out)
+	}
+}
+
+func TestConfigMemoryV5LocalIsRejected(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	errOut := captureStderr(t, func() {
+		if rc := Run([]string{"config", "memory-v5", "--local", "off"}, "test-version"); rc != 2 {
+			t.Fatalf("config memory-v5 --local rc = %d, want 2", rc)
+		}
+	})
+	if !strings.Contains(errOut, "--local is not supported") {
+		t.Fatalf("config memory-v5 --local stderr = %q", errOut)
+	}
+	if _, err := os.Stat("reasonix.toml"); !os.IsNotExist(err) {
+		t.Fatalf("reasonix.toml should not be written, stat err=%v", err)
 	}
 }
 
@@ -794,8 +906,8 @@ func TestConfigureKeysAllSetDefaultsToReusingInput(t *testing.T) {
 
 // TestAppendEnvUpsertReplacesExistingKey covers the bug where re-running the
 // wizard with a corrected key would append a second line for the same env
-// var. loadDotEnv is first-wins, so without dedupe the stale key kept
-// authenticating, and the user saw a 401 with no obvious cause.
+// var. Without dedupe, different dotenv readers can disagree on which
+// assignment wins, leaving stale keys hard to diagnose.
 func TestAppendEnvUpsertReplacesExistingKey(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "") // also covers the os.Setenv pin path
 	p := filepath.Join(t.TempDir(), ".env")
@@ -1114,6 +1226,78 @@ func TestProviderSlug(t *testing.T) {
 			t.Errorf("fallback slug = %q, want 8 hex chars after prefix", got)
 		}
 	})
+
+	t.Run("sha1 fallback for non-ascii host", func(t *testing.T) {
+		got := providerSlug("custom", "https://例子.测试/v1")
+		if !strings.HasPrefix(got, "custom-") || got == "custom-" {
+			t.Errorf("fallback slug = %q, want custom-<hex>", got)
+		}
+		if len(got) != len("custom-")+8 {
+			t.Errorf("fallback slug = %q, want 8 hex chars after prefix", got)
+		}
+	})
+}
+
+func TestAPIKeyEnvFromProviderName(t *testing.T) {
+	cases := []struct {
+		name, providerName, want string
+	}{
+		{"custom host slug", "custom-token-sensenova-cn", "CUSTOM_TOKEN_SENSENOVA_CN_API_KEY"},
+		{"localhost slug with port", "custom-localhost-11434", "CUSTOM_LOCALHOST_11434_API_KEY"},
+		{"desktop-style custom name", "Local Gateway", "LOCAL_GATEWAY_API_KEY"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := apiKeyEnvFromProviderName(tc.providerName); got != tc.want {
+				t.Errorf("apiKeyEnvFromProviderName(%q) = %q, want %q", tc.providerName, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("non-ascii provider names use desktop-compatible hash fallback", func(t *testing.T) {
+		if got, want := apiKeyEnvFromProviderName("商汤"), "CUSTOM_d39b9067_API_KEY"; got != want {
+			t.Errorf("apiKeyEnvFromProviderName(non-ascii) = %q, want %q", got, want)
+		}
+		if got := apiKeyEnvFromProviderName("通义千问"); got == "CUSTOM_d39b9067_API_KEY" || got == "CUSTOM_API_KEY" {
+			t.Errorf("apiKeyEnvFromProviderName(second non-ascii) = %q, want distinct stable fallback", got)
+		}
+	})
+}
+
+func TestPromptCustomProviderManualDefaultsKeyEnvFromBaseURL(t *testing.T) {
+	entries, err := promptCustomProviderManualWith(
+		bufio.NewScanner(strings.NewReader("\n\nsensenova-chat\n")),
+		"https://token.sensenova.cn/v1",
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("promptCustomProviderManualWith: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if got, want := entries[0].APIKeyEnv, "CUSTOM_TOKEN_SENSENOVA_CN_API_KEY"; got != want {
+		t.Errorf("APIKeyEnv = %q, want %q", got, want)
+	}
+}
+
+func TestPromptCustomProviderManualPreservesExplicitKeyEnv(t *testing.T) {
+	entries, err := promptCustomProviderManualWith(
+		bufio.NewScanner(strings.NewReader("\nmanual-chat\n")),
+		"https://token.sensenova.cn/v1",
+		"CUSTOM_API_KEY",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("promptCustomProviderManualWith: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if got := entries[0].APIKeyEnv; got != "CUSTOM_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want explicit CUSTOM_API_KEY", got)
+	}
 }
 
 // TestFilterStaleCustomEntries covers the wizard's auto-cleanup of legacy

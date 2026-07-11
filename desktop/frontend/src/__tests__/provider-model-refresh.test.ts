@@ -1,6 +1,7 @@
 // Run: tsx src/__tests__/provider-model-refresh.test.ts
 
 import {
+  apiKeyEnvFromProviderName,
   inferredVisionModels,
   isLikelyChatModel,
   isLikelyVisionModel,
@@ -46,14 +47,14 @@ eq(
 );
 
 eq(
-  mergedFetchedProviderModels(["mimo-v2.5-pro"], ["mimo-v2-flash", "mimo-v2-omni", "mimo-v2.5-pro"], { preserveCurated: true }),
+  mergedFetchedProviderModels(["mimo-v2.5-pro"], ["mimo-v2.5", "mimo-v2.5-pro"], { preserveCurated: true }),
   ["mimo-v2.5-pro"],
   "manual access refresh preserves selected MiMo model instead of importing provider catalog",
 );
 
 eq(
-  providerModelCandidates(["mimo-v2.5-pro"], ["mimo-v2-flash", "mimo-v2-omni", "mimo-v2.5-pro"]),
-  ["mimo-v2.5-pro", "mimo-v2-flash", "mimo-v2-omni"],
+  providerModelCandidates(["mimo-v2.5-pro"], ["mimo-v2.5", "mimo-v2.5-pro"]),
+  ["mimo-v2.5-pro", "mimo-v2.5"],
   "manual access refresh can show provider catalog as unsaved candidates",
 );
 
@@ -137,6 +138,21 @@ eq(
   providerApiKeyEnvForSave("Local Gateway", "GATEWAY_KEY", ""),
   "GATEWAY_KEY",
   "preserves an explicitly configured key env",
+);
+
+eq(
+  [
+    apiKeyEnvFromProviderName("商汤"),
+    apiKeyEnvFromProviderName("通义千问"),
+  ],
+  ["CUSTOM_d39b9067_API_KEY", "CUSTOM_e995c4c9_API_KEY"],
+  "generates distinct stable key envs for non-ASCII provider names",
+);
+
+eq(
+  providerApiKeyEnvForSave("商汤", "CUSTOM_API_KEY", "sk-test"),
+  "CUSTOM_API_KEY",
+  "preserves an explicitly configured legacy custom key env",
 );
 
 eq(

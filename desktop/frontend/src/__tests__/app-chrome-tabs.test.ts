@@ -7,6 +7,14 @@ import { fileURLToPath } from "node:url";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const appChromeSource = readFileSync(resolve(testDir, "../components/AppChrome.tsx"), "utf8");
+const commandPaletteSource = readFileSync(resolve(testDir, "../components/CommandPalette.tsx"), "utf8");
+const projectTreeSource = readFileSync(resolve(testDir, "../components/ProjectTree.tsx"), "utf8");
+const topicShortcutsSource = readFileSync(resolve(testDir, "../lib/topicShortcuts.ts"), "utf8");
+const transcriptSource = readFileSync(resolve(testDir, "../components/Transcript.tsx"), "utf8");
+const composerSource = readFileSync(resolve(testDir, "../components/Composer.tsx"), "utf8");
+const controllerSource = readFileSync(resolve(testDir, "../lib/useController.ts"), "utf8");
+const bridgeSource = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
+const layoutStoreSource = readFileSync(resolve(testDir, "../store/layout.ts"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 let passed = 0;
@@ -65,6 +73,18 @@ ok(
 );
 
 ok(
+  /const titlebarDragRail = darwinChrome \|\| platform === "windows";/.test(appChromeSource) &&
+    /\{titlebarDragRail && <span className="app-chrome__drag-rail"/.test(appChromeSource),
+  "AppChrome exposes the classic drag rail on macOS and Windows",
+);
+
+ok(
+  /const WORKSPACE_PANEL_DEFAULT_OPEN = false;/.test(layoutStoreSource) &&
+    /workspacePanelOpen:\s*WORKSPACE_PANEL_DEFAULT_OPEN/.test(layoutStoreSource),
+  "right dock starts collapsed on launch",
+);
+
+ok(
   finalDeclaration(".app-chrome__tab-strip", "overflow") === "hidden",
   "AppChrome tab strip clips tabs to the available chrome width",
 );
@@ -110,13 +130,166 @@ ok(
 );
 
 ok(
-  /\{!workbenchChromeHidden && \(/.test(appSource),
+  /\{!appChromeHidden && \(/.test(appSource),
   "workbench skips rendering the top AppChrome row",
 );
 
 ok(
   /topicbar__chrome-btn/.test(appSource),
   "workbench keeps chrome controls in the topic bar",
+);
+
+ok(
+  /const \[transcriptRevealSignal, setTranscriptRevealSignal\] = useState\(0\);/.test(appSource) &&
+    /revealActiveSignal=\{tabRevealSignal\}/.test(appSource) &&
+    /revealSignal=\{transcriptRevealSignal\}/.test(appSource),
+  "transcript bottom reveal is decoupled from tab-strip reveal",
+);
+
+const tabsReorderBlock = appSource.match(/const handleTabsReorder = useCallback\([\s\S]*?\n  \}, \[refreshTabMetas, reorderTabs\]\);/)?.[0] ?? "";
+ok(
+  /setTabRevealSignal/.test(tabsReorderBlock) && !/setTranscriptRevealSignal/.test(tabsReorderBlock),
+  "tab reordering refreshes the tab strip without snapping the transcript",
+);
+
+ok(
+  /aria-label=\{t\("transcript\.jumpToBottom"\)\}/.test(transcriptSource) &&
+    /title=\{t\("transcript\.jumpToBottom"\)\}/.test(transcriptSource),
+  "jump-to-bottom affordance uses localized transcript text",
+);
+
+ok(
+  /setActive\(items\.length > 0 \? 0 : -1\)/.test(commandPaletteSource),
+  "command palette highlights the first item when opened with an empty query",
+);
+
+ok(
+  /topicShortcutIndexFromEvent\(event, desktopPlatform\)/.test(appSource) &&
+    /useTopicShortcuts\(!sidebarCollapsed, desktopPlatform\)/.test(appSource),
+  "topic shortcuts use the resolved desktop platform",
+);
+
+ok(
+  /topicShortcutLabel\(shortcutIndex, shortcutPlatform\)/.test(projectTreeSource),
+  "topic shortcut badges render the platform-specific modifier",
+);
+
+ok(
+  /if \(!enabled\) hideBadges\(\);/.test(topicShortcutsSource) &&
+    /if \(heldRef\.current\) hideBadges\(\);/.test(topicShortcutsSource) &&
+    /window\.removeEventListener\("blur", onBlur\);\s*hideBadges\(\);/.test(topicShortcutsSource),
+  "topic shortcut badge state is cleared when disabled, interrupted, or cleaned up",
+);
+
+ok(
+  /const \[rewindStatesByTab, setRewindStatesByTab\] = useState<Record<string, RewindState>>\(\{\}\);/.test(appSource) &&
+    /setRewindStateForTab\(sourceTabId, null\);/.test(appSource) &&
+    /setRewindCommittingForTab\(sourceTabId, true\);/.test(appSource),
+  "committing optimistic rewind clears only the source tab before awaiting the backend",
+);
+
+ok(
+  /const controllerReady = state\.meta\?\.ready === true && !state\.backendActivationPending;/.test(appSource) &&
+    /if \(!activeTabId \|\| !controllerReady\) return;\s*void commitThenSend\(activeTabId, text\)\.catch/.test(appSource) &&
+    /onPrompt=\{handleTranscriptPrompt\}/.test(appSource) &&
+    /submitDisabled=\{!controllerReady\}/.test(appSource),
+  "welcome prompts and composer submit share the controller readiness gate",
+);
+
+ok(
+  /pendingPlanRevisionsByTab\[activeTabId\]/.test(appSource) &&
+    /commitThenSendRef\.current\(activeTabId, text\)/.test(appSource) &&
+    !/const \[pendingPlanRevision, setPendingPlanRevision\]/.test(appSource),
+  "queued plan revisions stay scoped to their source tab",
+);
+
+ok(
+  /commitThenSendRef\.current\(sourceTabId, trimmed, submitText\.trim\(\)\)/.test(appSource) &&
+    /sendToTab\(sourceTabId, displayText, submitText\)/.test(appSource) &&
+    /onSteer=\{handleSteer\}/.test(appSource) &&
+    /composerInsertRequestsByTab\[activeTabId\]/.test(appSource) &&
+    /consumedInsertIdByDraftRef\.current\[draftKey\]/.test(composerSource),
+  "composer sends and steers carry an explicit source tab through async preparation",
+);
+
+ok(
+  appSource.includes('key={`${activeTabId ?? ""}:${state.approval.id}`}') &&
+    appSource.includes('key={`${activeTabId ?? ""}:${state.ask.id}`}') &&
+    /planRevisionInsertRequest\.tabId === activeTabId/.test(appSource) &&
+    /planRevisionInsertRequest\.approvalId === state\.approval\?\.id/.test(appSource),
+  "approval and ask local state is scoped by tab plus prompt identity",
+);
+
+ok(
+  /app\.NewSessionForTab\(tabId\)/.test(controllerSource) &&
+    /app\.ClearSessionForTab\(tabId\)/.test(controllerSource) &&
+    /app\.CompactForTab\(tabId\)/.test(controllerSource) &&
+    /app\.RewindForTab\(sourceTabId, turn, actionScope\)/.test(controllerSource) &&
+    /app\.ForkForTab\(sourceTabId, turn\)/.test(controllerSource) &&
+    /app\.SummarizeFromForTab\(sourceTabId, turn\)/.test(controllerSource) &&
+    /NewSessionForTab\(tabID: string\)/.test(bridgeSource) &&
+    /CompactForTab\(tabID: string\)/.test(bridgeSource) &&
+    /RewindForTab\(tabID: string, turn: number, scope: string\)/.test(bridgeSource),
+  "session-changing controller actions use explicit tab-scoped Wails bindings",
+);
+
+ok(
+  /const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
+    /hydrating=\{transcriptHydrating\}/.test(appSource),
+  "Welcome is suppressed only until transcript history has loaded",
+);
+
+ok(
+  /const \[workspaceControllerEpoch, setWorkspaceControllerEpoch\] = useState\(0\);/.test(appSource) &&
+    /const workspaceScopeKey = \[/.test(appSource) &&
+    /activeTab\?\.sessionPath/.test(appSource) &&
+    /state\.meta\?\.sessionPath/.test(appSource) &&
+    /state\.meta\?\.cwd/.test(appSource) &&
+    /state\.sessionGen/.test(appSource) &&
+    /workspaceControllerEpoch/.test(appSource) &&
+    Array.from(appSource.matchAll(/workspaceScopeKey=\{workspaceScopeKey\}/g)).length === 3,
+  "workspace file consumers receive a session and controller scoped identity",
+);
+
+ok(
+  /const unsubReady = onReady\(\(readyTabId\) => \{[\s\S]*?setWorkspaceControllerEpoch[\s\S]*?\n    \}\);/.test(appSource) &&
+    /const unsubRebuilt = onRuntimeRebuilt\(\(rebuiltTabId\) => \{[\s\S]*?setWorkspaceControllerEpoch[\s\S]*?\n    \}\);/.test(appSource),
+  "controller ready and rebuilt events invalidate active workspace file scopes",
+);
+
+const navigationBlock = appSource.match(/const runNavigationRequest = useCallback\([\s\S]*?\n  \}, \[[^\]]*singleSurfaceLayout[^\]]*\]\);/)?.[0] ?? "";
+ok(
+  /const navigationRunningRef = useRef\(false\);/.test(appSource) &&
+    /const navigationPendingRef = useRef<PendingDesktopNavigationRequest \| null>\(null\);/.test(appSource) &&
+    /const runNavigationRequest = useCallback\(async \(request: PendingDesktopNavigationRequest\)/.test(appSource) &&
+    /const latest = \(\) => request\.seq === navigationSeqRef\.current;/.test(appSource) &&
+    /return activateTopic\(scope, workspaceRoot, topicId/.test(appSource) &&
+    /return openTopicSession\(scope, workspaceRoot, topicId/.test(appSource) &&
+    /return openGlobalTab\(topicId\)/.test(appSource) &&
+    /return openProjectTab\(workspaceRoot, topicId\)/.test(appSource) &&
+    /enqueueNavigationRequest\([\s\S]*runningRef: navigationRunningRef, pendingRef: navigationPendingRef/.test(appSource) &&
+    !/openTopicQueueRef\.current\.catch\(\(\) => \{\}\)\.then/.test(appSource) &&
+    /const refreshLatestTabMetas = async \(\): Promise<TabMeta\[]> => \{[\s\S]*if \(latest\(\)\) setTabMetas\(tabs\);/.test(navigationBlock) &&
+    /if \(!latest\(\)\) return;[\s\S]*seedActiveTabMeta\(openedTab\);[\s\S]*void refreshLatestTabMetas\(\);/.test(navigationBlock),
+  "desktop navigation coalesces pending requests, ignores stale results, and seeds active tab metadata before background refresh",
+);
+
+ok(
+  /return enqueueNavigation\(\{ kind: "topic", scope, workspaceRoot, topicId, sessionPath \}\);/.test(appSource) &&
+    /enqueueNavigation\(\{ kind: "blank", scope, workspaceRoot: scope === "project" \? workspaceRoot : "" \}\)/.test(appSource) &&
+    /return enqueueNavigation\(\{ kind: "sidebar-im", connection \}\);/.test(appSource) &&
+    /return enqueueNavigation\(\{ kind: "resume-session", session \}\);/.test(appSource),
+  "topic, blank, IM, and history navigation all use the shared coalescing path",
+);
+
+ok(
+  !/await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock),
+  "history navigation does not re-resume a session that OpenTopicSession already pinned",
+);
+
+ok(
+  /<HeartbeatPanel[\s\S]*onOpenTopic=\{\(scope, workspaceRoot, topicId\) => \{[\s\S]*void handleOpenTopic\(scope, workspaceRoot, topicId\);[\s\S]*\}\}/.test(appSource),
+  "heartbeat topic navigation uses the guarded open-topic path",
 );
 
 for (const selector of [
@@ -142,6 +315,44 @@ for (const selector of [
     `${selector} reserves right-dock width before rendering tabs`,
   );
 }
+
+for (const selector of [
+  ".app--windows-frameless .app-chrome--native-tabs",
+  ":root[data-theme-style] .app--windows-frameless .app-chrome--native-tabs",
+]) {
+  const paddingRight = finalDeclaration(selector, "padding-right") ?? "";
+  ok(
+    finalDeclaration(selector, "--windows-frameless-titlebar-tools-offset") === "var(--windows-window-controls-safe)" &&
+      paddingRight.includes("--windows-frameless-titlebar-tools-offset") &&
+      paddingRight.includes("--chrome-panel-control-size") &&
+      !paddingRight.includes("--chrome-right-toggle-offset"),
+    `${selector} keeps titlebar tools fixed beside the Windows controls`,
+  );
+}
+
+for (const selector of [
+  ".app--windows-frameless .app-chrome--native-tabs .app-chrome__panel-toggle--right",
+  ":root[data-theme-style] .app--windows-frameless .app-chrome--native-tabs .app-chrome__panel-toggle--right",
+]) {
+  ok(
+    finalDeclaration(selector, "right") === "calc(var(--windows-frameless-titlebar-tools-offset) + 8px)",
+    `${selector} stays fixed outside the Windows window controls`,
+  );
+}
+
+ok(
+  finalDeclaration(".app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail", "--wails-draggable") === "drag" &&
+    finalDeclaration(".app--windows-frameless:not(.app--workbench):not(.app--creation) .app-chrome--native-tabs .app-chrome__drag-rail", "right")?.includes("--windows-window-controls-safe") &&
+    finalDeclaration(".app--windows .app-chrome--native-tabs .tabbar", "--wails-draggable") === "no-drag",
+  "Windows classic chrome keeps a draggable rail while tabs remain clickable",
+);
+
+ok(
+  finalDeclaration(".sidebar", "--wails-draggable") === "drag" &&
+    finalDeclaration(".app--windows .sidebar", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(".sidebar-resizer", "--wails-draggable") === "no-drag",
+  "Windows sidebar avoids native window drag without changing other platforms",
+);
 
 for (const selector of [
   ".layout--workbench-chrome-hidden",

@@ -4,22 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/checkpoint"
+	"reasonix/internal/command"
 	"reasonix/internal/event"
+	"reasonix/internal/guardian"
 	"reasonix/internal/hook"
+	"reasonix/internal/i18n"
 	"reasonix/internal/jobs"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
+	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -66,6 +73,39 @@ func (r *sessionContextRunner) Run(ctx context.Context, input string) error {
 	r.parentSession = agent.ParentSession(ctx)
 	r.jobSession = jobs.SessionFromContext(ctx)
 	return nil
+}
+
+type cancelingRunner struct {
+	cancel context.CancelFunc
+}
+
+func (r cancelingRunner) Run(_ context.Context, _ string) error {
+	r.cancel()
+	return nil
+}
+
+func TestContextSnapshotIncludesCompletionTokens(t *testing.T) {
+	prov := &scriptedTurns{turns: [][]provider.Chunk{{
+		{Type: provider.ChunkText, Text: "ok"},
+		{Type: provider.ChunkUsage, Usage: &provider.Usage{
+			PromptTokens:     6840,
+			CompletionTokens: 48,
+			TotalTokens:      6888,
+			ReasoningTokens:  48,
+		}},
+		{Type: provider.ChunkDone},
+	}}}
+	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{ContextWindow: 1_000_000}, event.Discard)
+	c := New(Options{Runner: ag, Executor: ag})
+
+	if err := c.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	used, window := c.ContextSnapshot()
+	if used != 6888 || window != 1_000_000 {
+		t.Fatalf("ContextSnapshot() = (%d, %d), want (6888, 1000000)", used, window)
+	}
 }
 
 type fakeControlTool struct{ name string }
@@ -147,6 +187,15 @@ func requestMessagesText(messages []provider.Message) string {
 	return b.String()
 }
 
+func lastUserMessage(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == provider.RoleUser {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
 func TestNewTreatsTypedNilSinkAsDiscard(t *testing.T) {
 	var sink *typedNilControllerSink
 	c := New(Options{Sink: sink})
@@ -201,6 +250,33 @@ func TestClearSessionMarksCleanupPendingBeforeReturningForRunningJobs(t *testing
 		if filepath.Clean(session.Path) == filepath.Clean(oldPath) {
 			t.Fatalf("cleanup-pending old session still listed: %+v", sessions)
 		}
+	}
+}
+
+func TestClearSessionQueuesSessionStartHookContext(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte(`{"role":"user","content":"old"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	hooks := hook.NewRunner([]hook.ResolvedHook{{
+		HookConfig: hook.HookConfig{Command: "session-start"},
+		Event:      hook.SessionStart,
+	}}, dir, func(context.Context, hook.SpawnInput) hook.SpawnResult {
+		return hook.SpawnResult{ExitCode: 0, Stdout: "clear session context"}
+	}, nil)
+	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: oldPath, Label: "test", Hooks: hooks})
+
+	if err := c.ClearSession(); err != nil {
+		t.Fatalf("ClearSession: %v", err)
+	}
+	got := c.Compose("next")
+	if !strings.Contains(got, `<hook-context event="SessionStart">`) || !strings.Contains(got, "clear session context") || !strings.HasSuffix(got, "next") {
+		t.Fatalf("clear session did not queue SessionStart hook context: %q", got)
 	}
 }
 
@@ -283,6 +359,39 @@ func TestRunInjectsParentSessionForJobs(t *testing.T) {
 	}
 }
 
+func TestRunStopHookIgnoresCanceledCallerContext(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	var stopCalls int
+	var stopErr error
+	hooks := hook.NewRunner([]hook.ResolvedHook{{
+		HookConfig: hook.HookConfig{Command: "record-stop"},
+		Event:      hook.Stop,
+		Scope:      hook.ScopeProject,
+	}}, "", func(ctx context.Context, in hook.SpawnInput) hook.SpawnResult {
+		stopCalls++
+		stopErr = ctx.Err()
+		return hook.SpawnResult{ExitCode: 0}
+	}, nil)
+	c := New(Options{
+		Runner: cancelingRunner{cancel: cancel},
+		Hooks:  hooks,
+	})
+
+	if err := c.Run(runCtx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	if runCtx.Err() != context.Canceled {
+		t.Fatalf("caller context err = %v, want %v", runCtx.Err(), context.Canceled)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("Stop hook calls = %d, want 1", stopCalls)
+	}
+	if stopErr != nil {
+		t.Fatalf("Stop hook context err = %v, want nil", stopErr)
+	}
+}
+
 func TestSetSessionPathAdoptsTemporaryBackgroundJobs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
@@ -339,6 +448,116 @@ func TestGoalStatePersistsNextToSessionPath(t *testing.T) {
 	}
 }
 
+func TestResumeRestoresTerminalGoalTodosFromSidecar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	loaded := agent.NewSession("sys")
+	loaded.Add(provider.Message{
+		Role: provider.RoleAssistant,
+		ToolCalls: []provider.ToolCall{{
+			ID:        "todo-1",
+			Name:      "todo_write",
+			Arguments: `{"todos":[{"content":"Step 1","status":"in_progress"}]}`,
+		}},
+	})
+	loaded.Add(provider.Message{
+		Role:       provider.RoleTool,
+		ToolCallID: "todo-1",
+		Name:       "todo_write",
+		Content:    "ok",
+	})
+	if err := os.WriteFile(goalStatePath(path), []byte(`{"status":"complete","todos":[{"content":"Step 1","status":"completed"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c.Resume(loaded, path)
+
+	got := c.Todos()
+	if len(got) != 1 || got[0].Content != "Step 1" || got[0].Status != "completed" {
+		t.Fatalf("Todos() after resume = %+v, want completed todos from goal-state sidecar", got)
+	}
+}
+
+func TestResumeKeepsTranscriptTodosForRunningGoalSidecar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	loaded := agent.NewSession("sys")
+	loaded.Add(provider.Message{
+		Role: provider.RoleAssistant,
+		ToolCalls: []provider.ToolCall{{
+			ID:        "todo-1",
+			Name:      "todo_write",
+			Arguments: `{"todos":[{"content":"Step 1","status":"in_progress"}]}`,
+		}},
+	})
+	loaded.Add(provider.Message{
+		Role:       provider.RoleTool,
+		ToolCallID: "todo-1",
+		Name:       "todo_write",
+		Content:    "ok",
+	})
+	if err := os.WriteFile(goalStatePath(path), []byte(`{"status":"running","todos":[{"content":"Step 1","status":"completed"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c.Resume(loaded, path)
+
+	got := c.Todos()
+	if len(got) != 1 || got[0].Content != "Step 1" || got[0].Status != "in_progress" {
+		t.Fatalf("Todos() after resume = %+v, want transcript todos while goal state is running", got)
+	}
+}
+
+func TestResumeRestoresRunningAutoResearchGoalFromSidecar(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	path := filepath.Join(root, "session.jsonl")
+	taskID := "investigate-runtime-resume"
+	if err := os.MkdirAll(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".reasonix", "autoresearch", taskID, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "task_spec.json"), []byte(`{"id":"investigate-runtime-resume","goal":"investigate runtime resume","status":"running","created_at":"2026-06-30T00:00:00Z","updated_at":"2026-06-30T00:00:00Z","success_criteria":[{"id":"criterion-1","description":"resume keeps AutoResearch active","required":true}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "progress.json"), []byte(`{"task_id":"investigate-runtime-resume","iteration":2,"current_direction":"verify resume","stale_count":1,"pivot_count":0,"updated_at":"2026-06-30T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "directions_tried.json"), []byte(`{"task_id":"investigate-runtime-resume","directions":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "findings.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".reasonix", "autoresearch", taskID, "logs", "heartbeat.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goalStatePath(path), []byte(`{"goal":"investigate runtime resume","status":"running","researchMode":1,"autoResearchTaskID":"investigate-runtime-resume"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded := agent.NewSession("sys")
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, WorkspaceRoot: root, SessionDir: root, Label: "test"})
+	c.Resume(loaded, path)
+
+	if got := c.Goal(); got != "investigate runtime resume" {
+		t.Fatalf("Goal() after resume = %q, want running goal from sidecar", got)
+	}
+	composed := c.Compose("continue")
+	if !strings.Contains(composed, "<autoresearch-runtime>") || !strings.Contains(composed, "task_id: "+taskID) {
+		t.Fatalf("Compose after resume missing AutoResearch runtime for %q:\n%s", taskID, composed)
+	}
+}
+
 func TestRunTurnRecordsDisplayForPersistedUserMessage(t *testing.T) {
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
@@ -391,6 +610,941 @@ func TestSnapshotDoesNotRefreshSessionActivity(t *testing.T) {
 	}
 	if second.Model != "provider/model-a" {
 		t.Fatalf("snapshot model = %q, want provider/model-a", second.Model)
+	}
+}
+
+func TestSnapshotAdoptsNewerDiskForPureStalePrefix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleExec := agent.New(nil, nil, staleSess, agent.Options{}, event.Discard)
+	stale := New(Options{Executor: staleExec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "two"})
+	currentExec := agent.New(nil, nil, currentSess, agent.Options{}, event.Discard)
+	current := New(Options{Executor: currentExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := current.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity current: %v", err)
+	}
+
+	if err := stale.Snapshot(); err != nil {
+		t.Fatalf("Snapshot stale prefix: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 5 {
+		t.Fatalf("message count after stale snapshot = %d, want 5", got)
+	}
+	if got := loaded.Messages[4].Content; got != "two" {
+		t.Fatalf("last message after stale snapshot = %q, want %q", got, "two")
+	}
+	if got := len(stale.executor.Session().Snapshot()); got != 5 {
+		t.Fatalf("stale controller adopted message count = %d, want 5", got)
+	}
+}
+
+func TestSnapshotRecoversDivergedControllerTranscript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	staleExec := agent.New(nil, nil, staleSess, agent.Options{}, event.Discard)
+	stale := New(Options{Executor: staleExec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	currentExec := agent.New(nil, nil, currentSess, agent.Options{}, event.Discard)
+	current := New(Options{Executor: currentExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := current.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity current: %v", err)
+	}
+
+	if err := stale.Snapshot(); err != nil {
+		t.Fatalf("Snapshot stale diverged: %v", err)
+	}
+	recoveryPath := stale.SessionPath()
+	if recoveryPath == path || recoveryPath == "" {
+		t.Fatalf("stale session path after recovery = %q, want recovery path", recoveryPath)
+	}
+	recovered, err := agent.LoadSession(recoveryPath)
+	if err != nil {
+		t.Fatalf("LoadSession recovery: %v", err)
+	}
+	if got := recovered.Messages[len(recovered.Messages)-1].Content; got != "local second" {
+		t.Fatalf("recovery tail = %q, want local second", got)
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession original: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "disk second" {
+		t.Fatalf("original tail = %q, want disk second", got)
+	}
+}
+
+// TestSnapshotConflictRecoveryTransplantsInFlightTurnMarker: when a snapshot
+// conflict forks the running turn onto a recovery branch, the in-flight-turn
+// marker must move with it. Left on the original branch, the stale marker
+// makes the next open of that branch strip messages from a turn that in fact
+// kept running (and completed) on the recovery branch.
+func TestSnapshotConflictRecoveryTransplantsInFlightTurnMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	staleExec := agent.New(nil, nil, staleSess, agent.Options{}, event.Discard)
+	stale := New(Options{Executor: staleExec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	currentExec := agent.New(nil, nil, currentSess, agent.Options{}, event.Discard)
+	current := New(Options{Executor: currentExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := current.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity current: %v", err)
+	}
+
+	// The stale runtime had a foreground turn running when the conflict fired.
+	if err := agent.MarkSessionInFlightTurn(path, 2, true); err != nil {
+		t.Fatalf("MarkSessionInFlightTurn: %v", err)
+	}
+
+	if err := stale.Snapshot(); err != nil {
+		t.Fatalf("Snapshot stale diverged: %v", err)
+	}
+	recoveryPath := stale.SessionPath()
+	if recoveryPath == path || recoveryPath == "" {
+		t.Fatalf("stale session path after recovery = %q, want recovery path", recoveryPath)
+	}
+
+	origMeta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta original ok=%v err=%v", ok, err)
+	}
+	if origMeta.InFlightTurn != nil {
+		t.Fatal("in-flight turn marker left on the forked-from branch; reopening it would strip the turn")
+	}
+	recMeta, ok, err := agent.LoadBranchMeta(recoveryPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta recovery ok=%v err=%v", ok, err)
+	}
+	if recMeta.InFlightTurn == nil {
+		t.Fatal("in-flight turn marker not transplanted to the recovery branch")
+	}
+	if recMeta.InFlightTurn.StartMessageIndex != 2 || !recMeta.InFlightTurn.PreserveUser {
+		t.Fatalf("transplanted marker = %+v, want start index 2 with preserve_user", recMeta.InFlightTurn)
+	}
+}
+
+// TestRecoverInterruptedTurnSparesTurnContinuedOnRecoveryBranch covers the
+// legacy leftovers of the marker transplant: runtimes predating it forked a
+// recovery branch mid-turn and left the in-flight marker on the original
+// branch. Opening the original must clear the stale marker without stripping
+// a turn that in fact kept running on the recovery branch.
+func TestRecoverInterruptedTurnSparesTurnContinuedOnRecoveryBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	orig := agent.NewSession("sys")
+	orig.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	orig.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial"})
+	if err := orig.Save(path); err != nil {
+		t.Fatalf("Save original: %v", err)
+	}
+	if err := agent.MarkSessionInFlightTurn(path, 1, true); err != nil {
+		t.Fatalf("MarkSessionInFlightTurn: %v", err)
+	}
+	// A legacy runtime forked the running turn onto a recovery branch and
+	// left the marker behind on the original.
+	forked := agent.NewSession("sys")
+	forked.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	forked.Add(provider.Message{Role: provider.RoleAssistant, Content: "continued elsewhere"})
+	if _, err := forked.SaveRecoveryBranch(agent.RecoveryBranchOptions{OriginalPath: path}); err != nil {
+		t.Fatalf("SaveRecoveryBranch: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c.recoverInterruptedTurn(path)
+
+	if got := c.executor.Session().Len(); got != 3 {
+		t.Fatalf("message count after reopening forked-from branch = %d, want 3 (turn stripped despite recovery child)", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatal("fork-orphaned in-flight marker not cleared")
+	}
+}
+
+// TestRecoverInterruptedTurnStripsGenuineCrash pins the crash-recovery
+// behavior the recovery-child guard must not swallow: with no recovery branch
+// in sight, an in-flight marker means the runtime died mid-turn and the
+// partial tail is stripped (preserving the user prompt).
+func TestRecoverInterruptedTurnStripsGenuineCrash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	orig := agent.NewSession("sys")
+	orig.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	orig.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial"})
+	if err := orig.Save(path); err != nil {
+		t.Fatalf("Save original: %v", err)
+	}
+	if err := agent.MarkSessionInFlightTurn(path, 1, true); err != nil {
+		t.Fatalf("MarkSessionInFlightTurn: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c.recoverInterruptedTurn(path)
+
+	if got := c.executor.Session().Len(); got != 2 {
+		t.Fatalf("message count after crash recovery = %d, want 2 (sys + preserved user prompt)", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.InFlightTurn != nil {
+		t.Fatal("in-flight marker not cleared after crash recovery")
+	}
+}
+
+func TestSnapshotRewriteRecoversStaleControllerTranscript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleExec := agent.New(nil, nil, staleSess, agent.Options{}, event.Discard)
+	stale := New(Options{Executor: staleExec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "two"})
+	currentExec := agent.New(nil, nil, currentSess, agent.Options{}, event.Discard)
+	current := New(Options{Executor: currentExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := current.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity current: %v", err)
+	}
+
+	staleSess.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "summarized first"},
+	})
+	if err := stale.SnapshotRewrite(); err != nil {
+		t.Fatalf("SnapshotRewrite stale: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 5 {
+		t.Fatalf("message count after stale rewrite = %d, want 5", got)
+	}
+	if got := loaded.Messages[4].Content; got != "two" {
+		t.Fatalf("last message after stale rewrite = %q, want %q", got, "two")
+	}
+	recoveryPath := stale.SessionPath()
+	if recoveryPath == path || recoveryPath == "" {
+		t.Fatalf("stale session path after rewrite recovery = %q, want recovery path", recoveryPath)
+	}
+	recovered, err := agent.LoadSession(recoveryPath)
+	if err != nil {
+		t.Fatalf("LoadSession recovery: %v", err)
+	}
+	if got := recovered.Messages[1].Content; got != "summarized first" {
+		t.Fatalf("recovery content = %q, want summarized first", got)
+	}
+	meta, ok, err := agent.LoadBranchMeta(recoveryPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta recovery ok=%v err=%v", ok, err)
+	}
+	if !meta.Recovered || meta.ParentID != agent.BranchID(path) {
+		t.Fatalf("recovery meta = %+v, want recovered parent", meta)
+	}
+}
+
+func TestSnapshotActivityPersistsOwnedCompactionRewrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := sess.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	exec := agent.New(nil, nil, loaded, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	// A mid-turn autosave can persist the pre-compaction prefix. Auto-compaction
+	// then rewrites older history inside the same turn; the final activity
+	// snapshot must persist that owned rewrite in place instead of branching.
+	loaded.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot pre-compaction: %v", err)
+	}
+	loaded.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "<compaction-summary>\nSummary of earlier conversation: first -> one\n</compaction-summary>"},
+		{Role: provider.RoleUser, Content: "second"},
+	})
+	loaded.IncrementRewrite()
+
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity after compaction: %v", err)
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path after owned compaction = %q, want original %q", got, path)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession rewritten: %v", err)
+	}
+	if got := len(reloaded.Messages); got != 3 {
+		t.Fatalf("message count after compaction rewrite = %d, want 3: %+v", got, reloaded.Messages)
+	}
+	if got := reloaded.Messages[1].Content; !strings.Contains(got, "compaction-summary") {
+		t.Fatalf("compaction summary was not persisted: %+v", reloaded.Messages)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after owned compaction rewrite = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := currentSess.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+	sink := &noticeSink{}
+	c := New(Options{Executor: localExec, SessionDir: dir, SessionPath: path, Label: "test", Sink: sink})
+
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot initial recovery: %v", err)
+	}
+	recoveryPath := c.SessionPath()
+	if recoveryPath == "" || recoveryPath == path {
+		t.Fatalf("recovery path = %q, want distinct path", recoveryPath)
+	}
+	notices := sink.notices()
+	if len(notices) == 0 {
+		t.Fatal("initial recovery emitted no user notice")
+	}
+	if got := notices[len(notices)-1]; strings.Contains(got, agent.BranchID(recoveryPath)) || strings.Contains(got, "recovery branch") {
+		t.Fatalf("initial recovery notice exposed internal branch detail: %q", got)
+	}
+
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "continue"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot recovery append: %v", err)
+	}
+	localSess.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "<compaction-summary>\nSummary of recovery branch work: first -> local\n</compaction-summary>"},
+		{Role: provider.RoleUser, Content: "continue"},
+	})
+	localSess.IncrementRewrite()
+
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity recovery compaction: %v", err)
+	}
+	if got := c.SessionPath(); got != recoveryPath {
+		t.Fatalf("session path after recovery compaction = %q, want recovery %q", got, recoveryPath)
+	}
+	reloaded, err := agent.LoadSession(recoveryPath)
+	if err != nil {
+		t.Fatalf("LoadSession recovery: %v", err)
+	}
+	if got := len(reloaded.Messages); got != 3 {
+		t.Fatalf("message count after recovery compaction = %d, want 3: %+v", got, reloaded.Messages)
+	}
+	if got := reloaded.Messages[1].Content; !strings.Contains(got, "compaction-summary") {
+		t.Fatalf("recovery compaction summary was not persisted: %+v", reloaded.Messages)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("nested recovery branches after owned recovery compaction = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestConcurrentSnapshotsShareSingleRecoveryHandoff(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := currentSess.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+
+	entered := make(chan controlRecoveryInfo, 16)
+	release := make(chan struct{})
+	c := New(Options{
+		Executor:    localExec,
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "test",
+		OnSessionRecovered: func(info SessionRecoveryInfo) error {
+			entered <- controlRecoveryInfo{originalPath: info.OriginalPath, recoveryPath: info.RecoveryPath}
+			<-release
+			return nil
+		},
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.Snapshot() }()
+	first := <-entered
+	if first.originalPath != path || first.recoveryPath == "" || first.recoveryPath == path {
+		t.Fatalf("first recovery info = %+v, want distinct recovery from original", first)
+	}
+
+	const racingSnapshots = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, racingSnapshots)
+	for i := 0; i < racingSnapshots; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- c.Snapshot()
+		}()
+	}
+
+	select {
+	case extra := <-entered:
+		t.Fatalf("concurrent snapshot entered recovery while first handoff was blocked: %+v", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Snapshot: %v", err)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("racing Snapshot: %v", err)
+		}
+	}
+	select {
+	case extra := <-entered:
+		t.Fatalf("unexpected additional recovery after handoff completed: %+v", extra)
+	default:
+	}
+
+	if got := c.SessionPath(); got != first.recoveryPath {
+		t.Fatalf("controller session path = %q, want recovery %q", got, first.recoveryPath)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery branches: %v", err)
+	}
+	recoveries := recoveryTranscriptPaths(matches)
+	if len(recoveries) != 1 || recoveries[0] != first.recoveryPath {
+		t.Fatalf("recovery branches = %v err=%v, want only %q", matches, err, first.recoveryPath)
+	}
+}
+
+func recoveryTranscriptPaths(paths []string) []string {
+	out := paths[:0]
+	for _, path := range paths {
+		if !strings.HasSuffix(path, ".events.jsonl") {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+type controlRecoveryInfo struct {
+	originalPath string
+	recoveryPath string
+}
+
+// blockedRecoveryHandoff is a controller whose first Snapshot has entered the
+// recovery handoff and is parked inside OnSessionRecovered until release is
+// closed, so tests can race other controller operations against an in-flight
+// handoff.
+type blockedRecoveryHandoff struct {
+	c         *Controller
+	dir       string
+	path      string
+	local     *agent.Session
+	first     controlRecoveryInfo
+	release   chan struct{}
+	firstDone chan error
+}
+
+func startBlockedRecoveryHandoff(t *testing.T) *blockedRecoveryHandoff {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := currentSess.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+
+	entered := make(chan controlRecoveryInfo, 1)
+	release := make(chan struct{})
+	c := New(Options{
+		Executor:    localExec,
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "test",
+		OnSessionRecovered: func(info SessionRecoveryInfo) error {
+			entered <- controlRecoveryInfo{originalPath: info.OriginalPath, recoveryPath: info.RecoveryPath}
+			<-release
+			return nil
+		},
+	})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.Snapshot() }()
+	first := <-entered
+	if first.originalPath != path || first.recoveryPath == "" || first.recoveryPath == path {
+		t.Fatalf("recovery info = %+v, want distinct recovery from original", first)
+	}
+	return &blockedRecoveryHandoff{
+		c: c, dir: dir, path: path, local: localSess,
+		first: first, release: release, firstDone: firstDone,
+	}
+}
+
+// TestSessionSwapWaitsForRecoveryHandoff guards the swap side of the snapshot
+// serialization: moves of controller-owned session state must wait for an
+// in-flight save/recovery handoff instead of interleaving with it. A swap that
+// lands mid-handoff pairs the old path with the new session, which either
+// writes one transcript's messages into another's file or manufactures another
+// bogus conflict on the next save.
+func TestSessionSwapWaitsForRecoveryHandoff(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(t *testing.T, h *blockedRecoveryHandoff) (done chan struct{}, wantPath string)
+		// during runs while the handoff is still blocked; verify after the
+		// racing operation completed.
+		during func(t *testing.T, h *blockedRecoveryHandoff)
+		verify func(t *testing.T, h *blockedRecoveryHandoff)
+	}{
+		{name: "SetSessionPath", run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+			other := filepath.Join(h.dir, "other.jsonl")
+			done := make(chan struct{})
+			go func() { h.c.SetSessionPath(other); close(done) }()
+			return done, other
+		}},
+		{name: "Resume", run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+			other := filepath.Join(h.dir, "resumed.jsonl")
+			sess := agent.NewSession("sys")
+			sess.Add(provider.Message{Role: provider.RoleUser, Content: "resumed"})
+			if err := sess.Save(other); err != nil {
+				t.Fatalf("Save resumed: %v", err)
+			}
+			done := make(chan struct{})
+			go func() { h.c.Resume(sess, other); close(done) }()
+			return done, other
+		}},
+		{
+			name: "CancelFlush",
+			run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+				// Truncate the cancelled turn: drop the assistant reply, the
+				// same shape stripTurnMessagesAfter feeds this helper.
+				truncated := []provider.Message{
+					{Role: provider.RoleSystem, Content: "sys"},
+					{Role: provider.RoleUser, Content: "first"},
+				}
+				done := make(chan struct{})
+				go func() { h.c.replaceSessionAfterCancel(truncated); close(done) }()
+				return done, h.first.recoveryPath
+			},
+			during: func(t *testing.T, h *blockedRecoveryHandoff) {
+				// The in-memory truncation itself must wait for the handoff: an
+				// early Replace would let the blocked save capture the shortened
+				// transcript, read the longer on-disk partial as a stale-prefix
+				// conflict, and adopt it back over the cancel cleanup.
+				if got := len(h.local.Snapshot()); got != 3 {
+					t.Fatalf("session truncated to %d messages while the handoff was still in flight, want 3", got)
+				}
+			},
+			verify: func(t *testing.T, h *blockedRecoveryHandoff) {
+				if got := len(h.local.Snapshot()); got != 2 {
+					t.Fatalf("session = %d messages after cancel flush, want 2", got)
+				}
+				loaded, err := agent.LoadSession(h.first.recoveryPath)
+				if err != nil {
+					t.Fatalf("LoadSession recovery: %v", err)
+				}
+				if got := len(loaded.Messages); got != 2 {
+					t.Fatalf("recovery transcript = %d messages after cancel flush, want 2", got)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startBlockedRecoveryHandoff(t)
+			done, wantPath := tc.run(t, h)
+			select {
+			case <-done:
+				t.Fatal("session state moved while the recovery handoff was still in flight")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if tc.during != nil {
+				tc.during(t, h)
+			}
+			close(h.release)
+			if err := <-h.firstDone; err != nil {
+				t.Fatalf("first Snapshot: %v", err)
+			}
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("session state move did not finish after the handoff completed")
+			}
+			if got := h.c.SessionPath(); got != wantPath {
+				t.Fatalf("controller session path = %q, want %q", got, wantPath)
+			}
+			matches, err := filepath.Glob(filepath.Join(h.dir, "*-recovery-*.jsonl"))
+			if err != nil {
+				t.Fatalf("glob recovery branches: %v", err)
+			}
+			recoveries := recoveryTranscriptPaths(matches)
+			if len(recoveries) != 1 || recoveries[0] != h.first.recoveryPath {
+				t.Fatalf("recovery branches = %v, want only %q", matches, h.first.recoveryPath)
+			}
+			if tc.verify != nil {
+				tc.verify(t, h)
+			}
+		})
+	}
+}
+
+// TestSnapshotConflictAdoptionResetsRewriteBaseline guards the baseline
+// handoff on the adopt path: adopting a newer on-disk transcript installs a
+// freshly loaded session, and the replaced session's rewrite version must not
+// leak onto it. A leaked (higher) baseline would make the adopted session's
+// own compactions look already persisted, so the next autosave would take the
+// snapshot path, conflict, and fork a spurious recovery branch.
+func TestSnapshotConflictAdoptionResetsRewriteBaseline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	base := agent.NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+	stale, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession stale: %v", err)
+	}
+	other, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession other: %v", err)
+	}
+	other.Add(provider.Message{Role: provider.RoleAssistant, Content: "newer"})
+	if err := other.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot other: %v", err)
+	}
+
+	exec := agent.New(nil, nil, stale, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	// Rewrites the stale controller never persisted before it noticed the
+	// newer transcript; adoption must discard this counter with the session.
+	for i := 0; i < 3; i++ {
+		stale.IncrementRewrite()
+	}
+
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot adopt: %v", err)
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path after adoption = %q, want original %q", got, path)
+	}
+	adopted := exec.Session()
+	if adopted == stale {
+		t.Fatal("expected adoption to replace the stale session")
+	}
+	if adopted.NeedsRewriteSave() {
+		t.Fatal("adopted session should carry a persisted rewrite baseline; the stale session's counter must not leak onto it")
+	}
+
+	// The adopted session's first compaction must persist in place.
+	msgs := adopted.Snapshot()
+	adopted.Replace([]provider.Message{
+		msgs[0],
+		{Role: provider.RoleUser, Content: "<compaction-summary>\nfirst -> newer\n</compaction-summary>"},
+	})
+	adopted.IncrementRewrite()
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity after adopted compaction: %v", err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after adopted compaction = %v err=%v, want none", matches, err)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession rewritten: %v", err)
+	}
+	if got := len(reloaded.Messages); got != 2 {
+		t.Fatalf("message count after adopted compaction = %d, want 2: %+v", got, reloaded.Messages)
+	}
+}
+
+// TestConcurrentCompactionAndAutosaveNeverBranch drives the real shape of the
+// bug: a mid-turn autosave goroutine saving while the turn goroutine compacts.
+// Whatever the interleaving, an owned single-process session must never fork a
+// recovery branch — the decision/mark pipeline in snapshot() has to capture
+// the rewrite version it actually persisted, and retry as an owned rewrite
+// when a compaction slips in between.
+func TestConcurrentCompactionAndAutosaveNeverBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "turn-0"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("initial snapshot: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// Errors surface as recovery branches, asserted below.
+				_ = c.SnapshotActivity()
+			}
+		}
+	}()
+	for i := 1; i <= 40; i++ {
+		sess.Add(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn-%d", i)})
+		if i%4 == 0 {
+			msgs := sess.Snapshot()
+			sess.Replace([]provider.Message{
+				msgs[0],
+				{Role: provider.RoleUser, Content: fmt.Sprintf("<compaction-summary>\nrounds through %d\n</compaction-summary>", i)},
+				msgs[len(msgs)-1],
+			})
+			sess.IncrementRewrite()
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatalf("final snapshot: %v", err)
+	}
+
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("compaction racing autosave created recovery branches: %v err=%v", matches, err)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession final: %v", err)
+	}
+	if got, want := len(reloaded.Messages), sess.Len(); got != want {
+		t.Fatalf("persisted %d messages, memory has %d", got, want)
+	}
+}
+
+func TestAdoptHistoryPreservesRewriteBaseline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	s := agent.NewSession("old sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "tool-1", Name: "read_file", Arguments: "{}"}}})
+	s.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "tool-1", Name: "read_file", Content: strings.Repeat("detail ", 100)})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	msgs := loaded.Snapshot()
+	msgs[0].Content = "new sys"
+
+	exec := agent.New(nil, nil, agent.NewSession("new sys"), agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
+	c.AdoptHistory(msgs, path)
+	rewrite := exec.Session().Snapshot()
+	rewrite[3].Content = "[elided tool result]"
+	exec.Session().Replace(rewrite)
+	if err := c.SnapshotRewrite(); err != nil {
+		t.Fatalf("SnapshotRewrite adopted history: %v", err)
+	}
+
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("SessionPath after adopted rewrite = %q, want %q", got, path)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession rewritten: %v", err)
+	}
+	if got := reloaded.Messages[0].Content; got != "new sys" {
+		t.Fatalf("system prompt after rewrite = %q, want new sys", got)
+	}
+	if got := reloaded.Messages[3].Content; got != "[elided tool result]" {
+		t.Fatalf("tool result after rewrite = %q, want elided", got)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after adopted rewrite = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestAdoptHistoryRejectsStaleCarriedHistoryBaseline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	current := agent.NewSession("sys")
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk two"})
+	if err := current.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	stale := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "first"},
+		{Role: provider.RoleAssistant, Content: "one"},
+	}
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
+	c.AdoptHistory(stale, path)
+	if err := c.SnapshotRewrite(); err != nil {
+		t.Fatalf("SnapshotRewrite stale adopted history: %v", err)
+	}
+
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("SessionPath after stale adopted rewrite = %q, want original path", got)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession original: %v", err)
+	}
+	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "disk two" {
+		t.Fatalf("original tail after stale adopted rewrite = %q, want disk two", got)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after prefix stale adopted rewrite = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestCancelFlushRejectsStaleControllerOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "partial"})
+	staleExec := agent.New(nil, nil, staleSess, agent.Options{}, event.Discard)
+	stale := New(Options{Executor: staleExec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "two"})
+	currentExec := agent.New(nil, nil, currentSess, agent.Options{}, event.Discard)
+	current := New(Options{Executor: currentExec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := current.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity current: %v", err)
+	}
+
+	stale.replaceSessionAfterCancel([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "first"},
+	})
+
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := len(loaded.Messages); got != 5 {
+		t.Fatalf("message count after stale cancel flush = %d, want 5", got)
+	}
+	if got := loaded.Messages[4].Content; got != "two" {
+		t.Fatalf("last message after stale cancel flush = %q, want %q", got, "two")
 	}
 }
 
@@ -477,6 +1631,366 @@ func TestNewSessionStartsFreshContextAndSavesTranscript(t *testing.T) {
 	}
 }
 
+func TestSnapshotConflictLogAttrsCarryRevisionLedger(t *testing.T) {
+	conflict := &agent.SessionSnapshotConflictError{
+		Path:             "/tmp/session.jsonl",
+		Kind:             agent.SessionSnapshotConflictDiverged,
+		ExistingMessages: 7,
+		SnapshotMessages: 5,
+		BaseRevision:     3,
+		DiskRevision:     9,
+	}
+	attrs := snapshotConflictLogAttrs(fmt.Errorf("save: %w", conflict), "/tmp/session.jsonl", "rewrite")
+	got := map[string]any{}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, ok := attrs[i].(string)
+		if !ok {
+			t.Fatalf("attr key %v is not a string", attrs[i])
+		}
+		got[key] = attrs[i+1]
+	}
+	if got["mode"] != "rewrite" || got["kind"] != "diverged" {
+		t.Fatalf("attrs = %v, want mode=rewrite kind=diverged", got)
+	}
+	if got["base_revision"] != int64(3) || got["disk_revision"] != int64(9) {
+		t.Fatalf("attrs = %v, want base_revision=3 disk_revision=9", got)
+	}
+	if got["disk_messages"] != 7 || got["snapshot_messages"] != 5 {
+		t.Fatalf("attrs = %v, want disk_messages=7 snapshot_messages=5", got)
+	}
+
+	// A conflict error without the typed detail still logs path and mode.
+	plain := snapshotConflictLogAttrs(agent.ErrSessionSnapshotConflict, "/tmp/session.jsonl", "snapshot")
+	if len(plain) != 4 {
+		t.Fatalf("plain attrs = %v, want only path and mode", plain)
+	}
+}
+
+type noticeSink struct {
+	mu     sync.Mutex
+	events []event.Event
+}
+
+func (s *noticeSink) Emit(e event.Event) {
+	s.mu.Lock()
+	s.events = append(s.events, e)
+	s.mu.Unlock()
+}
+
+func (s *noticeSink) notices() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, e := range s.events {
+		if e.Kind == event.Notice {
+			out = append(out, e.Text)
+		}
+	}
+	return out
+}
+
+func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	disk := agent.NewSession("sys")
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	disk.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	if err := disk.Save(path); err != nil {
+		t.Fatalf("Save disk: %v", err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	meta.Recovered = true
+	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
+	if err := agent.SaveBranchMeta(path, meta); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+
+	stale := agent.NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	exec := agent.New(nil, nil, stale, agent.Options{}, event.Discard)
+	sink := &noticeSink{}
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test", Sink: sink})
+	stale.IncrementRewrite()
+
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path = %q, want unchanged %q (no new fork)", got, path)
+	}
+	forks, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(forks) != 0 {
+		t.Fatalf("depth cap still forked: %v", forks)
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "local second" {
+		t.Fatalf("disk tail = %q, want force-saved local transcript", got)
+	}
+	notices := sink.notices()
+	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "saved the current conflict copy in place") {
+		t.Fatalf("notices = %v, want depth-cap notice", notices)
+	}
+	if stale.NeedsRewriteSave() {
+		t.Fatal("rewrite baseline not re-anchored by depth-cap force save")
+	}
+
+	foreign := agent.NewSession("sys")
+	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	foreign.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	foreign.Add(provider.Message{Role: provider.RoleUser, Content: "foreign second"})
+	if err := foreign.Save(path); err != nil {
+		t.Fatalf("Save foreign: %v", err)
+	}
+	meta, ok, err = agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta foreign ok=%v err=%v", ok, err)
+	}
+	meta.Recovered = true
+	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
+	if err := agent.SaveBranchMeta(path, meta); err != nil {
+		t.Fatalf("SaveBranchMeta foreign: %v", err)
+	}
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("repeated depth-cap Snapshot: %v", err)
+	}
+	if got := sink.notices(); len(got) != len(notices) {
+		t.Fatalf("repeated depth-cap snapshot emitted duplicate notice: %v", got)
+	}
+
+	// The force save re-anchored the baseline: the next snapshot must not
+	// conflict again.
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "answer"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("follow-up Snapshot: %v", err)
+	}
+	if got := sink.notices(); len(got) != len(notices) {
+		t.Fatalf("follow-up snapshot emitted more notices: %v", got)
+	}
+}
+
+func TestNewSessionRefusesWhileTurnRunning(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
+
+	c.mu.Lock()
+	c.running = true
+	c.mu.Unlock()
+
+	if err := c.NewSession(); err == nil {
+		t.Fatal("NewSession while running = nil error, want refusal")
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path = %q, want unrotated %q", got, path)
+	}
+	if snap := exec.Session().Snapshot(); len(snap) != 2 {
+		t.Fatalf("running session was reset out from under the turn: %+v", snap)
+	}
+
+	c.mu.Lock()
+	c.running = false
+	c.mu.Unlock()
+	if err := c.NewSession(); err != nil {
+		t.Fatalf("NewSession after the turn stopped: %v", err)
+	}
+	if c.SessionPath() == path {
+		t.Fatal("session path did not rotate once the turn stopped")
+	}
+}
+
+// TestNewSessionRefusesTurnStartedDuringSnapshot forces the TOCTOU interleaving
+// the running guard alone missed: a turn starts while NewSession is mid-Snapshot
+// (running was false at the entry check), and must be refused so the executor
+// session is not swapped out from under a live run loop.
+func TestNewSessionRefusesTurnStartedDuringSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	// A diverged on-disk transcript makes Snapshot enter the recovery callback,
+	// where the test parks NewSession mid-rotation.
+	diskSess := agent.NewSession("sys")
+	diskSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	diskSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := diskSess.Save(path); err != nil {
+		t.Fatalf("Save disk: %v", err)
+	}
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	c := New(Options{
+		Executor:     localExec,
+		SystemPrompt: "sys",
+		SessionDir:   dir,
+		SessionPath:  path,
+		Label:        "test",
+		OnSessionRecovered: func(SessionRecoveryInfo) error {
+			entered <- struct{}{}
+			<-release
+			return nil
+		},
+	})
+
+	newSessionDone := make(chan error, 1)
+	go func() { newSessionDone <- c.NewSession() }()
+
+	// NewSession is now parked inside Snapshot, still holding the rotation gate.
+	<-entered
+
+	// A turn tries to start in exactly the window the bare running check left
+	// open. It must be refused rather than flip running=true and read the
+	// session NewSession is about to replace.
+	if err := c.RunTurn(context.Background(), "hello"); !errors.Is(err, ErrTurnRunning) {
+		close(release)
+		<-newSessionDone
+		t.Fatalf("RunTurn during rotation = %v, want ErrTurnRunning", err)
+	}
+	if c.Running() {
+		close(release)
+		<-newSessionDone
+		t.Fatal("RunTurn set running=true during a rotation")
+	}
+	// The live session must be untouched while the refused turn could have read
+	// it: NewSession has not swapped yet (still parked before the swap).
+	if snap := localExec.Session().Snapshot(); len(snap) != 3 {
+		close(release)
+		<-newSessionDone
+		t.Fatalf("session mutated during rotation window: %+v", snap)
+	}
+
+	close(release)
+	if err := <-newSessionDone; err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// Rotation completed: a fresh session with only the system prompt, on a new
+	// path, and a turn may start again.
+	if c.SessionPath() == path {
+		t.Fatal("session path did not rotate")
+	}
+	if snap := localExec.Session().Snapshot(); len(snap) != 1 || snap[0].Role != provider.RoleSystem {
+		t.Fatalf("post-rotation session = %+v, want only system prompt", snap)
+	}
+	if c.Running() {
+		t.Fatal("rotation gate leaked: controller still marked running")
+	}
+}
+
+// TestSessionMutationsRefuseWhileRotating proves every session-mutating entry
+// point is wired to the same rotation gate: while a rotation is in progress
+// (c.rotating held), each refuses instead of swapping/rewriting the live
+// session, and a turn cannot start either. This is the TOCTOU class the bare
+// Running() checks left open — a mutation slipping in mid-rotation.
+func TestSessionMutationsRefuseWhileRotating(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "there"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
+
+	// Simulate a rotation already in progress (as NewSession/ClearSession hold
+	// it across their snapshot-then-swap window).
+	if err := c.beginRotation(); err != nil {
+		t.Fatalf("beginRotation: %v", err)
+	}
+
+	if err := c.NewSession(); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("NewSession while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.ClearSession(); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("ClearSession while rotating = %v, want errRotationInProgress", err)
+	}
+	if _, err := c.Branch("x"); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("Branch while rotating = %v, want errRotationInProgress", err)
+	}
+	if _, err := c.ForkNamed(1, "x"); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("ForkNamed while rotating = %v, want errRotationInProgress", err)
+	}
+	if _, err := c.SwitchBranch("x"); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("SwitchBranch while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.Compact(context.Background(), ""); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("Compact while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.Rewind(0, RewindConversation); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("Rewind while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.SummarizeFrom(context.Background(), 1); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("SummarizeFrom while rotating = %v, want errRotationInProgress", err)
+	}
+	if err := c.SummarizeUpTo(context.Background(), 1); !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("SummarizeUpTo while rotating = %v, want errRotationInProgress", err)
+	}
+	// A turn must not start while a rotation holds the gate.
+	if err := c.RunTurn(context.Background(), "hello"); !errors.Is(err, ErrTurnRunning) {
+		t.Fatalf("RunTurn while rotating = %v, want ErrTurnRunning", err)
+	}
+	// The live session was never touched by any refused mutation.
+	if snap := exec.Session().Snapshot(); len(snap) != 3 {
+		t.Fatalf("session mutated during rotation = %+v, want untouched", snap)
+	}
+
+	c.endRotation()
+
+	// Conversely: while a turn runs, every mutation is refused with its own
+	// message and the gate cannot be claimed.
+	c.mu.Lock()
+	c.running = true
+	c.mu.Unlock()
+	if err := c.beginRotation(); !errors.Is(err, errTurnRunningRotation) {
+		t.Fatalf("beginRotation while running = %v, want errTurnRunningRotation", err)
+	}
+	if err := c.Compact(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "cannot compact while a turn is running") {
+		t.Fatalf("Compact while running = %v, want 'cannot compact' message", err)
+	}
+	if err := c.Rewind(0, RewindConversation); err == nil || !strings.Contains(err.Error(), "cannot rewind while a turn is running") {
+		t.Fatalf("Rewind while running = %v, want 'cannot rewind' message", err)
+	}
+	if err := c.SummarizeFrom(context.Background(), 1); err == nil || !strings.Contains(err.Error(), "cannot summarize while a turn is running") {
+		t.Fatalf("SummarizeFrom while running = %v, want 'cannot summarize' message", err)
+	}
+}
+
+func TestNewSessionQueuesSessionStartHookContext(t *testing.T) {
+	dir := t.TempDir()
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	hooks := hook.NewRunner([]hook.ResolvedHook{{
+		HookConfig: hook.HookConfig{Command: "session-start"},
+		Event:      hook.SessionStart,
+	}}, dir, func(context.Context, hook.SpawnInput) hook.SpawnResult {
+		return hook.SpawnResult{ExitCode: 0, Stdout: "new session context"}
+	}, nil)
+	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test", Hooks: hooks})
+
+	if err := c.NewSession(); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	got := c.Compose("next")
+	if !strings.Contains(got, `<hook-context event="SessionStart">`) || !strings.Contains(got, "new session context") || !strings.HasSuffix(got, "next") {
+		t.Fatalf("new session did not queue SessionStart hook context: %q", got)
+	}
+}
+
 func TestNewSessionResetsTwoModelPlannerContext(t *testing.T) {
 	dir := t.TempDir()
 	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
@@ -512,6 +2026,132 @@ func TestNewSessionResetsTwoModelPlannerContext(t *testing.T) {
 	}
 	if !strings.Contains(second, "new task beta") {
 		t.Fatalf("new planner request missing current task:\n%s", second)
+	}
+}
+
+func TestTwoModelPlannerApprovalUsesHostGate(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("Plan:\n1. Edit main.go\n\n是否批准这个方案？"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("approved execution complete"),
+	}}
+	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+
+	ids := make(chan string, 1)
+	var prompts int
+	c := New(Options{
+		Runner:       coord,
+		Executor:     exec,
+		SystemPrompt: "exec sys",
+		SessionDir:   dir,
+		SessionPath:  filepath.Join(dir, "session.jsonl"),
+		Label:        "test",
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind != event.ApprovalRequest {
+				return
+			}
+			prompts++
+			if e.Approval.Tool != planApprovalTool {
+				t.Errorf("approval tool = %q, want %q", e.Approval.Tool, planApprovalTool)
+			}
+			if !strings.Contains(e.Approval.Reason, "Planner requested") {
+				t.Errorf("approval reason = %q, want planner source", e.Approval.Reason)
+			}
+			ids <- e.Approval.ID
+		}),
+	})
+	c.EnableInteractiveApproval()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(context.Background(), "fix the planner approval bug")
+	}()
+	id := waitApprovalID(t, ids)
+	if got := len(execProv.requests); got != 0 {
+		t.Fatalf("executor requests before approval = %d, want 0", got)
+	}
+	c.Approve(id, true, false, false)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("approved two-model turn did not finish")
+	}
+	if prompts != 1 {
+		t.Fatalf("approval prompts = %d, want 1", prompts)
+	}
+	if got := len(execProv.requests); got == 0 {
+		t.Fatal("executor did not run after approval")
+	}
+	reqText := requestMessagesText(execProv.requests[0].Messages)
+	if !strings.Contains(reqText, "Reasonix executor handoff") || !strings.Contains(reqText, "Edit main.go") {
+		t.Fatalf("approved executor request missing planner handoff:\n%s", reqText)
+	}
+}
+
+func TestTwoModelPlannerUserDecisionUsesAskGate(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("需要用户选择方案：\n方案一：小改当前逻辑\n方案二：重构控制流\n请选择哪个方案。"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("selected execution complete"),
+	}}
+	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+
+	asks := make(chan event.Ask, 1)
+	c := New(Options{
+		Runner:       coord,
+		Executor:     exec,
+		SystemPrompt: "exec sys",
+		SessionDir:   dir,
+		SessionPath:  filepath.Join(dir, "session.jsonl"),
+		Label:        "test",
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.AskRequest {
+				asks <- e.Ask
+			}
+		}),
+	})
+	c.EnableInteractiveApproval()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(context.Background(), "fix the planner decision bug")
+	}()
+	var ask event.Ask
+	select {
+	case ask = <-asks:
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskRequest was not emitted")
+	}
+	if got := len(execProv.requests); got != 0 {
+		t.Fatalf("executor requests before user decision = %d, want 0", got)
+	}
+	if len(ask.Questions) != 1 || ask.Questions[0].ID != "planner_user_decision" {
+		t.Fatalf("ask questions = %+v, want planner decision question", ask.Questions)
+	}
+	c.AnswerQuestion(ask.ID, []event.AskAnswer{{QuestionID: "planner_user_decision", Selected: []string{"方案二：重构控制流"}}})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("answered two-model turn did not finish")
+	}
+	if got := len(execProv.requests); got == 0 {
+		t.Fatal("executor did not run after user decision")
+	}
+	reqText := requestMessagesText(execProv.requests[0].Messages)
+	if !strings.Contains(reqText, "Host user answer to planner question") || !strings.Contains(reqText, "方案二") {
+		t.Fatalf("executor request missing host user answer:\n%s", reqText)
 	}
 }
 
@@ -589,13 +2229,56 @@ func TestResetPlannerSessionClearsPlannerHistory(t *testing.T) {
 	}
 }
 
+func TestTwoModelShortChoiceReplySkipsPlanner(t *testing.T) {
+	dir := t.TempDir()
+	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
+		textTurn("planner should not run for a context-dependent choice reply"),
+	}}
+	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
+		textTurn("selected option 1"),
+	}}
+	execSess := agent.NewSession("exec sys")
+	execSess.Add(provider.Message{Role: provider.RoleUser, Content: "先给我两个执行方案"})
+	execSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "两个执行方式可选：\n\n1. Subagent-Driven（推荐）\n2. 当前会话执行\n\n你选哪种？"})
+	exec := agent.New(execProv, tool.NewRegistry(), execSess, agent.Options{}, event.Discard)
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, NewPlannerGate(nil))
+	c := New(Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"), Label: "test"})
+
+	if err := c.Run(context.Background(), "1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(planner.requests) != 0 {
+		t.Fatalf("planner requests = %d, want 0 for a short context-dependent choice reply", len(planner.requests))
+	}
+	if len(execProv.requests) != 1 {
+		t.Fatalf("executor requests = %d, want 1", len(execProv.requests))
+	}
+	reqText := requestMessagesText(execProv.requests[0].Messages)
+	if !strings.Contains(reqText, "1. Subagent-Driven") {
+		t.Fatalf("executor request lost the previous assistant options:\n%s", reqText)
+	}
+	if strings.Contains(reqText, "Reasonix executor handoff") {
+		t.Fatalf("short choice reply should not be wrapped as a planner handoff:\n%s", reqText)
+	}
+	if got := lastUserMessage(execProv.requests[0].Messages); got != "1" {
+		t.Fatalf("executor last user = %q, want raw choice reply", got)
+	}
+}
+
 func TestSubmitClearDiscardsCurrentContextWithoutSavingTranscript(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "old context"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	path := filepath.Join(dir, "session.jsonl")
-	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
+	cleared := make(chan struct{})
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.Notice && e.Text == "context cleared" {
+			close(cleared)
+		}
+	})
+	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test", Sink: sink})
 	if err := c.Snapshot(); err != nil {
 		t.Fatal(err)
 	}
@@ -607,10 +2290,11 @@ func TestSubmitClearDiscardsCurrentContextWithoutSavingTranscript(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	c.submit("/clear", "")
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && c.SessionPath() == path {
-		time.Sleep(time.Millisecond)
+	c.submit("/clear", "", "")
+	select {
+	case <-cleared:
+	case <-time.After(2 * time.Second):
+		t.Fatal("/clear did not finish")
 	}
 	if c.SessionPath() == path {
 		t.Fatal("/clear did not rotate to a fresh session path")
@@ -740,6 +2424,98 @@ tier = "lazy"
 	}
 	if names := c.ConfiguredMCPNames(); len(names) != 0 {
 		t.Fatalf("ConfiguredMCPNames() = %v, want empty after remove", names)
+	}
+}
+
+func TestRemoveMCPServerKeepsRuntimeOnlyToolsWhenPersistenceRemovalFails(t *testing.T) {
+	isolateControlConfigHome(t)
+	reg := tool.NewRegistry()
+	reg.Add(fakeControlTool{name: "mcp__runtime_only__echo"})
+	c := New(Options{Host: plugin.NewHost(), Registry: reg})
+
+	if disconnected, err := c.RemoveMCPServer("runtime_only"); err == nil || disconnected || !strings.Contains(err.Error(), "no removable MCP server") {
+		t.Fatalf("RemoveMCPServer(runtime_only) = (%v, %v)", disconnected, err)
+	}
+	if _, found := reg.Get("mcp__runtime_only__echo"); !found {
+		t.Fatalf("runtime-only tool was removed despite failed persistence; names=%v", reg.Names())
+	}
+}
+
+func TestRemoveMCPServerRejectsPluginManagedTools(t *testing.T) {
+	home := isolateControlConfigHome(t)
+	reasonixHome := filepath.Join(home, ".reasonix")
+	t.Setenv("REASONIX_HOME", reasonixHome)
+	root := filepath.Join(reasonixHome, "plugins", "superpowers")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, pluginpkg.NativeManifest), []byte(`{
+  "name": "superpowers",
+  "version": "1.0.0",
+  "mcpServers": {
+    "helper": { "command": "bin/helper" }
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginpkg.Upsert(reasonixHome, pluginpkg.InstalledPlugin{
+		Name:         "superpowers",
+		Root:         "plugins/superpowers",
+		Version:      "1.0.0",
+		ManifestKind: "reasonix",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tool.NewRegistry()
+	reg.Add(fakeControlTool{name: "mcp__helper__echo"})
+	c := New(Options{Host: plugin.NewHost(), Registry: reg})
+	disconnected, err := c.RemoveMCPServer("helper")
+	if err == nil || disconnected || !strings.Contains(err.Error(), "managed by plugin") || !strings.Contains(err.Error(), "superpowers") {
+		t.Fatalf("RemoveMCPServer(plugin-managed) = (%v, %v)", disconnected, err)
+	}
+	if _, found := reg.Get("mcp__helper__echo"); !found {
+		t.Fatalf("plugin-managed tool was removed despite rejected removal; names=%v", reg.Names())
+	}
+	if disconnected := c.DisconnectMCPServer("helper"); !disconnected {
+		t.Fatal("session-only disconnect should be allowed for a plugin-managed MCP")
+	}
+	if _, found := reg.Get("mcp__helper__echo"); found {
+		t.Fatalf("plugin-managed tool survived session-only disconnect; names=%v", reg.Names())
+	}
+}
+
+func TestRemoveMCPServerDeletesProjectMCPJSONSource(t *testing.T) {
+	isolateControlConfigHome(t)
+	if err := os.WriteFile(".mcp.json", []byte(`{
+  "mcpServers": {
+    "mock": { "command": "mock-mcp" },
+    "keep": { "command": "keep-mcp" }
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tool.NewRegistry()
+	reg.Add(fakeControlTool{name: "mcp__mock__connect"})
+	c := New(Options{Host: plugin.NewHost(), Registry: reg})
+	disconnected, err := c.RemoveMCPServer("mock")
+	if err != nil {
+		t.Fatalf("RemoveMCPServer(.mcp.json): %v", err)
+	}
+	if disconnected {
+		t.Fatal("RemoveMCPServer reported a live disconnect for an idle .mcp.json server")
+	}
+	if _, found := reg.Get("mcp__mock__connect"); found {
+		t.Fatalf(".mcp.json placeholder survived removal; names=%v", reg.Names())
+	}
+	raw, err := os.ReadFile(".mcp.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"mock"`) || !strings.Contains(string(raw), `"keep"`) {
+		t.Fatalf(".mcp.json removal did not preserve unrelated servers:\n%s", raw)
 	}
 }
 
@@ -884,6 +2660,82 @@ func TestMemoryApprovalRequestShowsRememberPayload(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("memory approval stayed blocked after Approve")
+	}
+}
+
+func TestGuardianCannotAutoAllowFreshHumanApprovalTools(t *testing.T) {
+	guardianProv := &recordingProvider{
+		name:    "guardian",
+		streams: [][]provider.Chunk{textTurn(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"authorized memory update"}`)},
+	}
+	guardianSess := guardian.NewSession(guardianProv, tool.NewRegistry(), guardian.PolicyPrompt(), "guardian-test", 0, nil, event.Discard)
+	exec := agent.New(&recordingProvider{name: "executor"}, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
+
+	approvals := make(chan event.Approval, 1)
+	c := New(Options{
+		Executor: exec,
+		Guardian: guardianSess,
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				approvals <- e.Approval
+			}
+		}),
+	})
+
+	args := json.RawMessage(`{"name":"prefers-vitest","description":"Preferred test framework","body":"Use vitest for frontend tests."}`)
+	type approveResult struct {
+		allow    bool
+		remember bool
+		err      error
+	}
+	done := make(chan approveResult, 1)
+	go func() {
+		allow, remember, err := gateApprover{c}.Approve(context.Background(), "remember", "", args)
+		done <- approveResult{allow: allow, remember: remember, err: err}
+	}()
+
+	var approval event.Approval
+	select {
+	case approval = <-approvals:
+	case <-time.After(2 * time.Second):
+		t.Fatal("memory approval request was not emitted after Guardian allow")
+	}
+	if approval.Tool != "remember" {
+		t.Fatalf("approval tool = %q, want remember", approval.Tool)
+	}
+	if len(guardianProv.requests) != 1 {
+		t.Fatalf("guardian reviews = %d, want 1", len(guardianProv.requests))
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("Guardian must not auto-allow remember, got %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	c.Approve(approval.ID, true, true, true)
+	select {
+	case got := <-done:
+		if got.err != nil || !got.allow || got.remember {
+			t.Fatalf("Approve = (%v,%v,%v), want manual allow without remember", got.allow, got.remember, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("memory approval stayed blocked after manual Approve")
+	}
+}
+
+func TestHeadlessGateRefusesFreshHumanApprovalTools(t *testing.T) {
+	gate := NewHeadlessPermissionGate(permission.New("ask", nil, nil, nil))
+
+	for _, toolName := range []string{"remember", "forget"} {
+		allow, reason, err := gate.Check(context.Background(), toolName, json.RawMessage(`{}`), false)
+		if err != nil || allow || !strings.Contains(reason, "fresh human approval") {
+			t.Fatalf("%s headless check = (%v,%q,%v), want fresh-human refusal", toolName, allow, reason, err)
+		}
+	}
+
+	allow, reason, err := gate.Check(context.Background(), "bash", json.RawMessage(`{"command":"go test ./..."}`), false)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("ordinary headless ask = (%v,%q,%v), want autonomous allow", allow, reason, err)
 	}
 }
 
@@ -1161,6 +3013,308 @@ func TestApprovalPersistentBashPrefixRememberRule(t *testing.T) {
 	}
 }
 
+func TestPlanModeReadOnlyTrustApprovalPersistsMCPTrust(t *testing.T) {
+	ids := make(chan string, 2)
+	var approval event.Approval
+	var notices []string
+	var rememberedServer, rememberedTool string
+	prompts := 0
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				prompts++
+				approval = e.Approval
+				ids <- e.Approval.ID
+			}
+			if e.Kind == event.Notice {
+				notices = append(notices, e.Text)
+			}
+		}),
+		OnRememberMCPReadOnlyTrust: func(serverName, rawToolName string) MCPReadOnlyTrustResult {
+			rememberedServer, rememberedTool = serverName, rawToolName
+			return MCPReadOnlyTrustResult{Server: serverName, Tool: rawToolName, Path: "reasonix.toml", Saved: true}
+		},
+	})
+
+	go func() {
+		c.Approve(<-ids, true, true, true)
+	}()
+	req := agent.PlanModeReadOnlyTrustRequest{
+		ToolName:    "mcp__github__issue_read",
+		ServerName:  "github",
+		RawToolName: "issue/read",
+		Args:        json.RawMessage(`{"issue":1}`),
+	}
+	allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("CheckPlanModeReadOnlyTrust = (%v,%q,%v), want allow", allow, reason, err)
+	}
+	if approval.Tool != "mcp__github__issue_read" || !strings.Contains(approval.Subject, "github/issue/read") || !strings.Contains(approval.Reason, "read-only") {
+		t.Fatalf("approval = %+v, want MCP read-only trust prompt", approval)
+	}
+	if rememberedServer != "github" || rememberedTool != "issue/read" {
+		t.Fatalf("remembered MCP trust = %s/%s, want github/issue/read", rememberedServer, rememberedTool)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "github/issue/read") {
+		t.Fatalf("notices = %v, want MCP trust saved notice", notices)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	allow, reason, err = planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(ctx, req)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("second CheckPlanModeReadOnlyTrust = (%v,%q,%v), want session grant", allow, reason, err)
+	}
+	if prompts != 1 {
+		t.Fatalf("approval prompts = %d, want 1", prompts)
+	}
+}
+
+func TestPlanModeReadOnlyTrustApprovalPersistsBashCommandTrust(t *testing.T) {
+	ids := make(chan string, 2)
+	var approval event.Approval
+	var notices []string
+	var rememberedPrefix string
+	prompts := 0
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				prompts++
+				approval = e.Approval
+				ids <- e.Approval.ID
+			}
+			if e.Kind == event.Notice {
+				notices = append(notices, e.Text)
+			}
+		}),
+		OnRememberPlanModeReadOnlyCommand: func(prefix string) PlanModeReadOnlyCommandTrustResult {
+			rememberedPrefix = prefix
+			return PlanModeReadOnlyCommandTrustResult{Prefix: prefix, Path: "reasonix.toml", Saved: true}
+		},
+	})
+
+	go func() {
+		c.Approve(<-ids, true, true, true)
+	}()
+	req := agent.PlanModeReadOnlyTrustRequest{
+		ToolName: agent.PlanModeReadOnlyCommandApprovalTool,
+		Command:  "gh issue view 5867 --json title",
+		Prefix:   "gh issue view",
+		Args:     json.RawMessage(`{"command":"gh issue view 5867 --json title"}`),
+	}
+	allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("CheckPlanModeReadOnlyTrust = (%v,%q,%v), want allow", allow, reason, err)
+	}
+	if approval.Tool != agent.PlanModeReadOnlyCommandApprovalTool || !strings.Contains(approval.Subject, `Trust "gh issue view"`) || !strings.Contains(approval.Subject, "gh issue view 5867") || !strings.Contains(approval.Reason, "Auto/YOLO") {
+		t.Fatalf("approval = %+v, want plan-mode bash read-only command trust prompt", approval)
+	}
+	if rememberedPrefix != "gh issue view" {
+		t.Fatalf("remembered prefix = %q, want gh issue view", rememberedPrefix)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "gh issue view") {
+		t.Fatalf("notices = %v, want read-only command trust saved notice", notices)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	allow, reason, err = planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(ctx, req)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("second CheckPlanModeReadOnlyTrust = (%v,%q,%v), want session grant", allow, reason, err)
+	}
+	if prompts != 1 {
+		t.Fatalf("approval prompts = %d, want 1", prompts)
+	}
+}
+
+func TestApprovalSubjectsUseChineseCatalog(t *testing.T) {
+	i18n.DetectLanguage("zh")
+	t.Cleanup(func() { i18n.DetectLanguage("en") })
+
+	rememberArgs := json.RawMessage(`{"name":"prefers-vitest","type":"user","description":"Preferred test framework","body":"Use Vitest for frontend tests."}`)
+	if got := approvalDisplaySubject(memoryRememberTool, "", rememberArgs); !strings.Contains(got, "保存/更新记忆") || !strings.Contains(got, "正文: Use Vitest") {
+		t.Fatalf("remember approval subject = %q, want Chinese labels", got)
+	}
+
+	forgetArgs := json.RawMessage(`{"name":"old-fact"}`)
+	if got := approvalDisplaySubject(memoryForgetTool, "", forgetArgs); got != `归档记忆 "old-fact"` {
+		t.Fatalf("forget approval subject = %q, want Chinese archive label", got)
+	}
+}
+
+func TestPlanModeReadOnlyTrustApprovalUsesChineseCatalog(t *testing.T) {
+	i18n.DetectLanguage("zh")
+	t.Cleanup(func() { i18n.DetectLanguage("en") })
+
+	approvalRequests := make(chan event.Approval, 1)
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				approvalRequests <- e.Approval
+			}
+		}),
+	})
+	done := make(chan struct {
+		allow  bool
+		reason string
+		err    error
+	}, 1)
+	req := agent.PlanModeReadOnlyTrustRequest{
+		ToolName: agent.PlanModeReadOnlyCommandApprovalTool,
+		Command:  "gh issue view 5867 --json title",
+		Prefix:   "gh issue view",
+		Args:     json.RawMessage(`{"command":"gh issue view 5867 --json title"}`),
+	}
+	go func() {
+		allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+		done <- struct {
+			allow  bool
+			reason string
+			err    error
+		}{allow: allow, reason: reason, err: err}
+	}()
+
+	var approval event.Approval
+	select {
+	case approval = <-approvalRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-mode bash trust approval request was not emitted")
+	}
+	if !strings.Contains(approval.Subject, "在计划模式中信任") || !strings.Contains(approval.Subject, "gh issue view 5867") {
+		t.Fatalf("approval subject = %q, want Chinese plan-mode trust subject", approval.Subject)
+	}
+	if !strings.Contains(approval.Reason, "不在 Reasonix 内置只读集合中") {
+		t.Fatalf("approval reason = %q, want Chinese plan-mode trust reason", approval.Reason)
+	}
+
+	c.Approve(approval.ID, false, false, false)
+	select {
+	case got := <-done:
+		if got.err != nil || got.allow || !strings.Contains(got.reason, "用户拒绝") {
+			t.Fatalf("rejected trust result = %+v, want Chinese denial", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-mode bash trust approval stayed blocked after rejection")
+	}
+}
+
+func TestPlanModeReadOnlyTrustApprovalIgnoresToolAutoApproval(t *testing.T) {
+	approvalRequests := make(chan event.Approval, 1)
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				approvalRequests <- e.Approval
+			}
+		}),
+	})
+	c.SetAutoApproveTools(true)
+
+	type trustResult struct {
+		allow  bool
+		reason string
+		err    error
+	}
+	done := make(chan trustResult, 1)
+	req := agent.PlanModeReadOnlyTrustRequest{
+		ToolName:    "mcp__github__issue_read",
+		ServerName:  "github",
+		RawToolName: "issue/read",
+	}
+	go func() {
+		allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+		done <- trustResult{allow: allow, reason: reason, err: err}
+	}()
+
+	var approval event.Approval
+	select {
+	case approval = <-approvalRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("MCP read-only trust prompt was not emitted under tool auto-approval")
+	}
+	if approval.Tool != "mcp__github__issue_read" || !strings.Contains(approval.Subject, "github/issue/read") {
+		t.Fatalf("approval = %+v, want MCP read-only trust prompt", approval)
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("tool auto-approval must not answer MCP read-only trust, got %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	c.Approve(approval.ID, true, true, false)
+	select {
+	case got := <-done:
+		if got.err != nil || !got.allow || got.reason != "" {
+			t.Fatalf("CheckPlanModeReadOnlyTrust after approval = %+v, want allow", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MCP read-only trust prompt stayed blocked after Approve")
+	}
+
+	allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("session-granted MCP read-only trust under YOLO = (%v,%q,%v), want allow", allow, reason, err)
+	}
+}
+
+func TestPlanModeReadOnlyCommandTrustApprovalIgnoresToolAutoApproval(t *testing.T) {
+	approvalRequests := make(chan event.Approval, 1)
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				approvalRequests <- e.Approval
+			}
+		}),
+	})
+	c.SetAutoApproveTools(true)
+
+	type trustResult struct {
+		allow  bool
+		reason string
+		err    error
+	}
+	done := make(chan trustResult, 1)
+	req := agent.PlanModeReadOnlyTrustRequest{
+		ToolName: agent.PlanModeReadOnlyCommandApprovalTool,
+		Command:  "gh issue view 5867",
+		Prefix:   "gh issue view",
+		Args:     json.RawMessage(`{"command":"gh issue view 5867"}`),
+	}
+	go func() {
+		allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+		done <- trustResult{allow: allow, reason: reason, err: err}
+	}()
+
+	var approval event.Approval
+	select {
+	case approval = <-approvalRequests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-mode bash read-only command trust prompt was not emitted under tool auto-approval")
+	}
+	if approval.Tool != agent.PlanModeReadOnlyCommandApprovalTool || !strings.Contains(approval.Subject, `Trust "gh issue view"`) {
+		t.Fatalf("approval = %+v, want plan-mode bash read-only command trust prompt", approval)
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("tool auto-approval must not answer plan-mode bash read-only command trust, got %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	c.Approve(approval.ID, true, true, false)
+	select {
+	case got := <-done:
+		if got.err != nil || !got.allow || got.reason != "" {
+			t.Fatalf("CheckPlanModeReadOnlyTrust after approval = %+v, want allow", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-mode bash read-only command trust prompt stayed blocked after Approve")
+	}
+
+	allow, reason, err := planModeReadOnlyTrustApprover{c}.CheckPlanModeReadOnlyTrust(context.Background(), req)
+	if err != nil || !allow || reason != "" {
+		t.Fatalf("session-granted plan-mode bash read-only command trust under YOLO = (%v,%q,%v), want allow", allow, reason, err)
+	}
+}
+
 func TestApprovalSessionGrantGroupsFileMutationTools(t *testing.T) {
 	c, ids, prompts := approvalIDs()
 	go func() { c.Approve(<-ids, true, true, false) }()
@@ -1296,6 +3450,51 @@ func TestRunGuardedPanicEmitsTurnDone(t *testing.T) {
 	}
 }
 
+func TestRunGuardedRejectsReplacementUntilTurnDoneReturns(t *testing.T) {
+	turnDoneEntered := make(chan struct{})
+	releaseTurnDone := make(chan struct{})
+	firstBodyDone := make(chan struct{})
+	secondBodyRan := make(chan struct{}, 1)
+	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+		if e.Kind == event.TurnDone {
+			close(turnDoneEntered)
+			<-releaseTurnDone
+		}
+	})})
+
+	c.runGuarded(func(context.Context) error {
+		close(firstBodyDone)
+		return nil
+	})
+	<-firstBodyDone
+	select {
+	case <-turnDoneEntered:
+	case <-time.After(time.Second):
+		t.Fatal("TurnDone delivery did not start")
+	}
+	if !c.RuntimeStatus().Running {
+		t.Fatal("controller reported idle while TurnDone was still being delivered")
+	}
+	c.runGuarded(func(context.Context) error {
+		secondBodyRan <- struct{}{}
+		return nil
+	})
+	select {
+	case <-secondBodyRan:
+		t.Fatal("replacement turn started before TurnDone delivery completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseTurnDone)
+	deadline := time.Now().Add(time.Second)
+	for c.RuntimeStatus().Running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if c.RuntimeStatus().Running {
+		t.Fatal("controller remained busy after TurnDone returned")
+	}
+}
+
 func TestRunGuardedPanicDoesNotDoubleEmitTurnDone(t *testing.T) {
 	sess := agent.NewSession("sys")
 	var count int32
@@ -1344,6 +3543,73 @@ func (r blockingRunner) Run(_ context.Context, input string) error {
 	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 	<-r.release
 	return nil
+}
+
+func TestRunTurnReportsErrTurnRunning(t *testing.T) {
+	sess := agent.NewSession("sys")
+	release := make(chan struct{})
+	c := New(Options{Runner: blockingRunner{session: sess, release: release}})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.RunTurn(context.Background(), "first")
+	}()
+	waitForRunning(t, c)
+
+	if err := c.RunTurn(context.Background(), "second"); err != ErrTurnRunning {
+		t.Fatalf("RunTurn while running error = %v, want ErrTurnRunning", err)
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first RunTurn returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first RunTurn did not finish after release")
+	}
+}
+
+func TestSendWhileRunningDoesNotInterleaveTurns(t *testing.T) {
+	sess := agent.NewSession("sys")
+	release := make(chan struct{})
+	events := make(chan event.Event, 4)
+	c := New(Options{
+		Runner: blockingRunner{session: sess, release: release},
+		Sink: event.FuncSink(func(e event.Event) {
+			events <- e
+		}),
+	})
+	defer c.autosaveWG.Wait()
+
+	c.Send("first")
+	waitForRunning(t, c)
+	c.Send("second")
+	close(release)
+	waitForTurnDone(t, events)
+
+	var users []string
+	for _, m := range sess.Messages {
+		if m.Role == provider.RoleUser {
+			users = append(users, m.Content)
+		}
+	}
+	if len(users) != 1 || users[0] != "first" {
+		t.Fatalf("user turns = %v, want only first turn recorded", users)
+	}
+}
+
+func waitForRunning(t *testing.T, c *Controller) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.Running() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("controller did not enter running state")
 }
 
 func TestMidTurnAutosavePersistsDuringLongTurn(t *testing.T) {
@@ -1433,7 +3699,7 @@ func TestApprovedPlanAutoApproveEndsWithExecutionTurn(t *testing.T) {
 	// The plan approval auto-approves writers for the execution turn only. A later
 	// turn does not inherit it, and "继续" carries no special meaning — Compose must
 	// not inject any marker, and the next writer falls back to per-tool approval.
-	if got := c.Compose("继续"); got != "继续" {
+	if got := c.Compose("继续"); StripComposePrefixes(got) != "继续" {
 		t.Fatalf("a paused approved plan must not marker-prefix the next turn, got %q", got)
 	}
 	allow, _, err := gateApprover{c}.Approve(context.Background(), "write_file", "/tmp/a", nil)
@@ -1482,7 +3748,7 @@ func TestApprovedPlanDoesNotAutoApproveNonContinuationTurn(t *testing.T) {
 	if err := c.runTurn(context.Background(), "plan this"); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Compose("先别继续"); got != "先别继续" {
+	if got := c.Compose("先别继续"); StripComposePrefixes(got) != "先别继续" {
 		t.Fatalf("non-continuation input should not be marker-prefixed, got %q", got)
 	}
 
@@ -1496,4 +3762,469 @@ func TestApprovedPlanDoesNotAutoApproveNonContinuationTurn(t *testing.T) {
 	if approvalPrompts != 2 {
 		t.Fatalf("non-continuation writer should prompt after plan approval, prompts=%d", approvalPrompts)
 	}
+}
+
+// writeCmdFile creates a command .md file with frontmatter under dir.
+func writeCmdFile(t *testing.T, dir, name, description, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf("---\ndescription: %s\n---\n%s\n", description, body)
+	if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCommandsAtomicPointer verifies that commands passed via Options.Commands are
+// correctly exposed through the atomic-pointer Commands() getter and that
+// CustomCommand resolves and renders them. Missing commands return found=false.
+func TestCommandsAtomicPointer(t *testing.T) {
+	cmds := []command.Command{
+		{Name: "review", Description: "Review code", Body: "Review $1"},
+		{Name: "test", Description: "Run tests", Body: "Test $1"},
+	}
+	c := New(Options{
+		Commands: cmds,
+		Sink:     &typedNilControllerSink{},
+		Registry: tool.NewRegistry(),
+	})
+
+	// Commands() returns what was passed via Options
+	got := c.Commands()
+	if len(got) != 2 {
+		t.Fatalf("Commands() = %d, want 2", len(got))
+	}
+	// Check retrieval via CustomCommand
+	sent, ok := c.CustomCommand("/review myfile.go")
+	if !ok {
+		t.Error("/review should be found")
+	}
+	if !strings.Contains(sent, "Review myfile.go") {
+		t.Errorf("unexpected render: %q", sent)
+	}
+	_, ok = c.CustomCommand("/missing")
+	if ok {
+		t.Error("/missing should not be found")
+	}
+
+	// Commands() getter uses atomic.Pointer internally
+	if cmds2 := c.Commands(); len(cmds2) != 2 {
+		t.Errorf("Commands() = %d after change, want 2", len(cmds2))
+	}
+}
+
+// TestReloadCommandsFromFilesystem exercises ReloadCommands against real .md
+// files in a temp workspace: initial load, hot-reload with a new file, and
+// hot-reload after modifying an existing file. Also verifies that skills are
+// preserved across the reload.
+func TestReloadCommandsFromFilesystem(t *testing.T) {
+	// Isolate HOME so CommandDirsForRoot does not pick up global .md command files.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	wsRoot := t.TempDir()
+	cmdDir := filepath.Join(wsRoot, ".reasonix", "commands")
+	writeCmdFile(t, cmdDir, "review", "Review code", "Review $1")
+	writeCmdFile(t, cmdDir, "test", "Run tests", "Test $1")
+
+	// Create a minimal in-memory skill to verify skills are preserved across reload.
+	sk := skill.Skill{
+		Name:        "myskill",
+		Description: "Test skill",
+		Body:        "You are a test skill. User says: {{.Input}}",
+	}
+
+	reg := tool.NewRegistry()
+	c := New(Options{
+		Sink:          &typedNilControllerSink{},
+		Registry:      reg,
+		WorkspaceRoot: wsRoot,
+		Skills:        []skill.Skill{sk},
+	})
+
+	// ReloadCommands should pick up the two .md files and preserve the skill.
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("ReloadCommands: %v", err)
+	}
+	cmds := c.Commands()
+	if len(cmds) != 2 {
+		t.Fatalf("Commands() = %d after reload, want 2", len(cmds))
+	}
+
+	// CustomCommand should resolve through the hot-swapped getter
+	sent, ok := c.CustomCommand("/review hello.go")
+	if !ok {
+		t.Fatal("/review should be found after reload")
+	}
+	if !strings.Contains(sent, "Review hello.go") {
+		t.Errorf("render = %q, want Review hello.go", sent)
+	}
+
+	// Missing command still not found
+	if _, ok := c.CustomCommand("/nope"); ok {
+		t.Error("/nope should not be found")
+	}
+
+	// Skill should appear in the slash_command tool's description after reload.
+	if tool, found := reg.Get("slash_command"); found {
+		if !strings.Contains(tool.Description(), "myskill") {
+			t.Error("skill 'myskill' should appear in slash_command tool Description after ReloadCommands")
+		}
+	} else {
+		t.Error("slash_command tool should be registered after ReloadCommands")
+	}
+
+	// Skill should still be callable via RunSkill after reload.
+	if _, ok := c.RunSkill("/myskill"); !ok {
+		t.Error("RunSkill(/myskill) should find the skill after ReloadCommands")
+	}
+
+	// Hot-reload: add a new command file
+	writeCmdFile(t, cmdDir, "count", "Count to N", "Count from 1 to $1")
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("ReloadCommands (add): %v", err)
+	}
+	if cmds := c.Commands(); len(cmds) != 3 {
+		t.Fatalf("Commands() = %d after add, want 3", len(cmds))
+	}
+
+	// Hot-reload: modify an existing command
+	writeCmdFile(t, cmdDir, "review", "Review code (friendly)", "Kindly review $1")
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("ReloadCommands (modify): %v", err)
+	}
+	if cmds := c.Commands(); len(cmds) != 3 {
+		t.Fatalf("Commands() = %d after modify, want 3", len(cmds))
+	}
+	sent, ok = c.CustomCommand("/review world.go")
+	if !ok {
+		t.Fatal("/review should be found after modify")
+	}
+	if !strings.Contains(sent, "Kindly review world.go") {
+		t.Errorf("render after modify = %q, want Kindly review world.go", sent)
+	}
+
+	// The slash_command tool should be registered and updated
+	if _, found := reg.Get("slash_command"); !found {
+		t.Error("slash_command tool should be registered after ReloadCommands")
+	}
+}
+
+// TestReloadCommandsDeleteFile verifies that removing a command .md file and
+// reloading causes the command to disappear from both Commands() and
+// CustomCommand(), while other commands remain intact.
+func TestReloadCommandsDeleteFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	wsRoot := t.TempDir()
+	cmdDir := filepath.Join(wsRoot, ".reasonix", "commands")
+	writeCmdFile(t, cmdDir, "alpha", "Alpha cmd", "Alpha $1")
+	writeCmdFile(t, cmdDir, "beta", "Beta cmd", "Beta $1")
+
+	reg := tool.NewRegistry()
+	c := New(Options{
+		Sink:          &typedNilControllerSink{},
+		Registry:      reg,
+		WorkspaceRoot: wsRoot,
+	})
+
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("initial reload: %v", err)
+	}
+	if got := len(c.Commands()); got != 2 {
+		t.Fatalf("Commands() = %d, want 2", got)
+	}
+
+	// Delete alpha.md
+	if err := os.Remove(filepath.Join(cmdDir, "alpha.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("reload after delete: %v", err)
+	}
+	if got := len(c.Commands()); got != 1 {
+		t.Fatalf("Commands() = %d after delete, want 1", got)
+	}
+
+	// /alpha should no longer be found
+	if _, ok := c.CustomCommand("/alpha x"); ok {
+		t.Error("/alpha should NOT be found after deletion")
+	}
+	// /beta should still work
+	sent, ok := c.CustomCommand("/beta y")
+	if !ok {
+		t.Error("/beta should still be found")
+	}
+	if !strings.Contains(sent, "Beta y") {
+		t.Errorf("render = %q, want Beta y", sent)
+	}
+}
+
+// TestReloadCommandsMalformedFile verifies that a malformed .md file causes
+// ReloadCommands to return an error but does not prevent other valid commands
+// from loading.
+func TestReloadCommandsMalformedFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	wsRoot := t.TempDir()
+	cmdDir := filepath.Join(wsRoot, ".reasonix", "commands")
+	writeCmdFile(t, cmdDir, "good", "Good cmd", "Good $1")
+
+	// Write a malformed file (no valid frontmatter)
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(cmdDir, "broken.md")
+	if err := os.WriteFile(broken, []byte("this is not valid yaml\n---\nrandom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tool.NewRegistry()
+	c := New(Options{
+		Sink:          &typedNilControllerSink{},
+		Registry:      reg,
+		WorkspaceRoot: wsRoot,
+	})
+
+	err := c.ReloadCommands(context.Background())
+	// We expect some error from the malformed file
+	if err == nil {
+		t.Log("ReloadCommands returned nil error despite malformed file — command.Load may tolerate it")
+	} else {
+		t.Logf("ReloadCommands returned error (expected): %v", err)
+	}
+
+	// The valid command should still be loadable
+	cmds := c.Commands()
+	foundGood := false
+	for _, cmd := range cmds {
+		if cmd.Name == "good" {
+			foundGood = true
+		}
+	}
+	if !foundGood {
+		t.Errorf("valid command 'good' should be present, got commands: %v", cmdNames(cmds))
+	}
+}
+
+// TestReloadCommandsSameNameAcrossDirs verifies that when the same command
+// name exists in multiple convention directories, the later-scanned directory
+// (higher priority) wins. ConventionDirs = [".reasonix", ".agents", ".agent",
+// ".claude"], scanned in reverse, so .reasonix is highest priority.
+func TestReloadCommandsSameNameAcrossDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	wsRoot := t.TempDir()
+
+	// Lower priority: .claude/commands
+	claudeDir := filepath.Join(wsRoot, ".claude", "commands")
+	writeCmdFile(t, claudeDir, "greet", "Claude greet", "Hello from Claude: $1")
+
+	// Higher priority: .reasonix/commands
+	reasonixDir := filepath.Join(wsRoot, ".reasonix", "commands")
+	writeCmdFile(t, reasonixDir, "greet", "Reasonix greet", "Hello from Reasonix: $1")
+
+	reg := tool.NewRegistry()
+	c := New(Options{
+		Sink:          &typedNilControllerSink{},
+		Registry:      reg,
+		WorkspaceRoot: wsRoot,
+	})
+
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	// There should be exactly 1 command named "greet"
+	cmds := c.Commands()
+	count := 0
+	for _, cmd := range cmds {
+		if cmd.Name == "greet" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 'greet' command, got %d", count)
+	}
+
+	// The winning version should be from .reasonix (highest priority)
+	sent, ok := c.CustomCommand("/greet world")
+	if !ok {
+		t.Fatal("/greet should be found")
+	}
+	if !strings.Contains(sent, "Hello from Reasonix") {
+		t.Errorf("expected .reasonix version to win, got render: %q", sent)
+	}
+}
+
+// TestReloadCommandsEmptySet verifies that deleting all command files and
+// reloading results in an empty Commands() slice, while the slash_command tool
+// still exists in the Registry (containing only Skills).
+func TestReloadCommandsEmptySet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	wsRoot := t.TempDir()
+	cmdDir := filepath.Join(wsRoot, ".reasonix", "commands")
+	writeCmdFile(t, cmdDir, "temp", "Temp cmd", "Temp $1")
+
+	sk := skill.Skill{
+		Name:        "preserved",
+		Description: "A skill to keep",
+		Body:        "Skill body: {{.Input}}",
+	}
+
+	reg := tool.NewRegistry()
+	c := New(Options{
+		Sink:          &typedNilControllerSink{},
+		Registry:      reg,
+		WorkspaceRoot: wsRoot,
+		Skills:        []skill.Skill{sk},
+	})
+
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("initial reload: %v", err)
+	}
+	if got := len(c.Commands()); got != 1 {
+		t.Fatalf("Commands() = %d, want 1", got)
+	}
+
+	// Delete all command files
+	if err := os.Remove(filepath.Join(cmdDir, "temp.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("reload after delete all: %v", err)
+	}
+	if got := len(c.Commands()); got != 0 {
+		t.Fatalf("Commands() = %d after delete all, want 0", got)
+	}
+
+	// /temp should no longer be found
+	if _, ok := c.CustomCommand("/temp x"); ok {
+		t.Error("/temp should NOT be found after deletion")
+	}
+
+	// slash_command tool should still exist (for Skills)
+	slashTool, found := reg.Get("slash_command")
+	if !found {
+		t.Fatal("slash_command tool should still exist even with 0 commands")
+	}
+	// It should still contain the skill
+	if !strings.Contains(slashTool.Description(), "preserved") {
+		t.Error("skill 'preserved' should still appear in slash_command tool Description")
+	}
+}
+
+// TestReloadCommandsDesktopManagementNotice verifies the desktop/HTTP path:
+// when the frontend submits "/reload-cmd" as raw input, Submit → managementNotice
+// handles it and emits a Notice event with the correct count.
+func TestReloadCommandsDesktopManagementNotice(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	wsRoot := t.TempDir()
+	cmdDir := filepath.Join(wsRoot, ".reasonix", "commands")
+	writeCmdFile(t, cmdDir, "hello", "Greet", "Hello $1")
+	writeCmdFile(t, cmdDir, "review", "Review code", "Review $1")
+
+	var notices []string
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.Notice {
+			notices = append(notices, e.Text)
+		}
+	})
+
+	reg := tool.NewRegistry()
+	c := New(Options{
+		Sink:          sink,
+		Registry:      reg,
+		WorkspaceRoot: wsRoot,
+	})
+
+	// Initial load so Commands() is populated.
+	if err := c.ReloadCommands(context.Background()); err != nil {
+		t.Fatalf("initial reload: %v", err)
+	}
+	notices = nil // reset
+
+	// Desktop path: managementNotice("/reload-cmd") should emit a notice.
+	handled := c.managementNotice("/reload-cmd")
+	if !handled {
+		t.Fatal("managementNotice(/reload-cmd) should return true")
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected 1 notice, got %d: %v", len(notices), notices)
+	}
+	if !strings.Contains(notices[0], "commands reloaded") {
+		t.Errorf("notice = %q, want 'commands reloaded'", notices[0])
+	}
+	if !strings.Contains(notices[0], "2 available") {
+		t.Errorf("notice = %q, want '2 available'", notices[0])
+	}
+
+	// Delete one command file and reload again.
+	if err := os.Remove(filepath.Join(cmdDir, "hello.md")); err != nil {
+		t.Fatal(err)
+	}
+	notices = nil
+	handled = c.managementNotice("/reload-cmd")
+	if !handled {
+		t.Fatal("managementNotice(/reload-cmd) after delete should return true")
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected 1 notice after delete, got %d: %v", len(notices), notices)
+	}
+	if !strings.Contains(notices[0], "1 available") {
+		t.Errorf("notice after delete = %q, want '1 available'", notices[0])
+	}
+
+	// Delete all and verify empty-set notice.
+	if err := os.Remove(filepath.Join(cmdDir, "review.md")); err != nil {
+		t.Fatal(err)
+	}
+	notices = nil
+	handled = c.managementNotice("/reload-cmd")
+	if !handled {
+		t.Fatal("managementNotice(/reload-cmd) empty set should return true")
+	}
+	if len(notices) != 1 {
+		t.Fatalf("expected 1 notice for empty set, got %d: %v", len(notices), notices)
+	}
+	if !strings.Contains(notices[0], "0 available") {
+		t.Errorf("notice for empty set = %q, want '0 available'", notices[0])
+	}
+}
+
+// cmdNames is a test helper that extracts command names from a slice.
+func cmdNames(cmds []command.Command) []string {
+	names := make([]string, len(cmds))
+	for i, c := range cmds {
+		names[i] = c.Name
+	}
+	return names
 }

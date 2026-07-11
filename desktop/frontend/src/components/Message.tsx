@@ -1,6 +1,6 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, RotateCcw, ScrollText } from "lucide-react";
+import { BrainCircuit, ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, RotateCcw, ScrollText } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import { ProcessBrainIcon } from "./ProcessCard";
@@ -10,10 +10,14 @@ import type { DisplayAttachment } from "../lib/attachmentDisplay";
 import { app } from "../lib/bridge";
 import { replaySubmitText } from "../lib/editReplay";
 import { useT } from "../lib/i18n";
+import { ImageViewer } from "./ImageViewer";
+import { Tooltip } from "./Tooltip";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { displayReasoningText } from "../lib/reasoningDisplay";
+import { stripMemoryCompilerExecution } from "../lib/memoryCompilerDisplay";
+import { visibleTranscriptMemoryCitations } from "../lib/memoryCitationVisibility";
 import type { Item, MessageActionScope } from "../lib/useController";
-import type { CheckpointMeta } from "../lib/types";
+import type { CheckpointMeta, MemoryCitation } from "../lib/types";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 export type TurnActionMenu = "summary" | "rewind";
@@ -78,6 +82,85 @@ function mergeDisplayAttachments(existing: DisplayAttachment[], incoming: Displa
   return merged;
 }
 
+type PastedBlockInfo = {
+  label: string;
+  content: string;
+};
+
+const PASTE_LABEL_RE = /\[(?:已粘贴文本|已貼上文字|Pasted text) #\d+ · \d+ (?:行|lines)\]/g;
+
+export function parsePastedBlocks(text: string, submitText?: string): PastedBlockInfo[] {
+  const labels = text.match(PASTE_LABEL_RE);
+  if (!labels || labels.length === 0 || !submitText) return [];
+  const unique = [...new Set(labels)];
+  const blocks: PastedBlockInfo[] = [];
+  for (const label of unique) {
+    const beginMarker = `--- Begin ${label} ---`;
+    const endMarker = `--- End ${label} ---`;
+    const beginIdx = submitText.indexOf(beginMarker);
+    const endIdx = submitText.indexOf(endMarker);
+    if (beginIdx < 0 || endIdx <= beginIdx) continue;
+    const contentStart = beginIdx + beginMarker.length;
+    const content = submitText.slice(contentStart, endIdx).replace(/^\r?\n/, "");
+    blocks.push({ label, content });
+  }
+  return blocks;
+}
+
+function MemoryCitations({ citations }: { citations?: MemoryCitation[] }) {
+  const t = useT();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const clean = visibleTranscriptMemoryCitations(citations)
+    .filter((citation) => (citation.source ?? citation.id ?? citation.note ?? "").trim() !== "")
+    .slice(0, 5);
+  useGSAPCollapse(bodyRef, open);
+  if (clean.length === 0) return null;
+  return (
+    <div className="msg-memory-citations">
+      <button
+        type="button"
+        className="msg-memory-citations__toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <ChevronRight className={`msg-memory-citations__chevron${open ? " msg-memory-citations__chevron--open" : ""}`} size={15} />
+        <span>{t("msg.memoryCompilerCitationsCount", { n: clean.length })}</span>
+      </button>
+      {open && (
+        <div ref={bodyRef} className="msg-memory-citations__body">
+          {clean.map((citation, index) => {
+            const lines = memoryCitationLines(citation, t);
+            return (
+              <div key={`${citation.id ?? citation.source}-${index}`} className="msg-memory-citations__item">
+                <div className="msg-memory-citations__source">
+                  <span>{memoryCitationSource(citation)}</span>
+                  {lines && <span className="msg-memory-citations__lines">{lines}</span>}
+                </div>
+                {citation.note && <div className="msg-memory-citations__note">{citation.note}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function memoryCitationSource(citation: MemoryCitation): string {
+  const source = (citation.source || citation.id || "Memory v5").trim();
+  if (citation.kind === "compiler_reference" && source === "Memory v5") return "Memory v5 compiler";
+  return source;
+}
+
+function memoryCitationLines(citation: MemoryCitation, t: ReturnType<typeof useT>): string {
+  const start = citation.lineStart ?? 0;
+  const end = citation.lineEnd ?? 0;
+  if (start <= 0) return "";
+  if (end > 0 && end !== start) return t("msg.memoryCitationLineRange", { start, end });
+  return t("msg.memoryCitationLine", { line: start });
+}
+
 function messageDate(value?: number): Date {
   return new Date(typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Date.now());
 }
@@ -111,7 +194,8 @@ export function UserMessage({
 }) {
   const t = useT();
   const imSource = parseImSourceMessage(text);
-  const actionText = imSource?.text ?? text;
+  const actionText = stripMemoryCompilerExecution(imSource?.text ?? text);
+  const hasMemoryCompiler = Boolean(submitText?.includes("<memory-compiler-execution>"));
   const { text: displayText, attachments } = parseAttachmentRefsForDisplay(actionText);
   const orderedAttachments = sortDisplayAttachments(attachments);
   const sourceLabel = imSource ? imSourceLabel(imSource, t) : "";
@@ -123,6 +207,65 @@ export function UserMessage({
   const [editSubmitting, setEditSubmitting] = useState(false);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({});
+  const [imageViewer, setImageViewer] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: "", name: "" });
+  const openImageViewer = useCallback(async (path: string, name: string) => {
+    let url = imagePreviews[path];
+    if (!url) {
+      try {
+        url = await app.AttachmentDataURL(path);
+        setImagePreviews((prev) => (prev[path] ? prev : { ...prev, [path]: url }));
+      } catch {
+        return;
+      }
+    }
+    setImageViewer({ open: true, url, name });
+  }, [imagePreviews]);
+
+  const closeImageViewer = useCallback(() => {
+    setImageViewer((prev) => (prev.open ? { ...prev, open: false } : prev));
+  }, []);
+
+  const pasteBlocks = useMemo(() => parsePastedBlocks(actionText, submitText), [actionText, submitText]);
+  const [expandedPasteLabels, setExpandedPasteLabels] = useState<Record<string, boolean>>({});
+
+  type DisplaySegment =
+    | { type: "text"; content: string }
+    | { type: "paste"; block: PastedBlockInfo };
+
+  const displaySegments = useMemo((): DisplaySegment[] => {
+    if (pasteBlocks.length === 0) return [{ type: "text", content: displayText }];
+    const segments: DisplaySegment[] = [];
+    // Order blocks by their position in the text so cards appear inline.
+    const ordered = pasteBlocks
+      .map((b) => ({ block: b, pos: displayText.indexOf(b.label) }))
+      .filter((x) => x.pos >= 0)
+      .sort((a, b) => a.pos - b.pos);
+    let remaining = displayText;
+    for (const { block } of ordered) {
+      const idx = remaining.indexOf(block.label);
+      if (idx < 0) continue;
+      // Text before the label: strip the trailing newline that separated the
+      // label from the preceding line so the card sits tight against the text.
+      if (idx > 0) {
+        let before = remaining.slice(0, idx);
+        before = before.replace(/\n$/, "");
+        if (before) segments.push({ type: "text", content: before });
+      }
+      segments.push({ type: "paste", block });
+      remaining = remaining.slice(idx + block.label.length);
+    }
+    // Strip the leading newline that followed the label.
+    remaining = remaining.replace(/^\n/, "");
+    if (remaining.trim()) segments.push({ type: "text", content: remaining });
+    return segments.length > 0 ? segments : [{ type: "text", content: displayText }];
+  }, [displayText, pasteBlocks]);
+
+  const togglePasteExpand = (label: string) => {
+    setExpandedPasteLabels((prev) => ({
+      ...prev,
+      [label]: !prev[label],
+    }));
+  };
   const orderedDraftAttachments = sortDisplayAttachments(draftAttachments);
   const imagePreviewKey = orderedAttachments
     .concat(orderedDraftAttachments)
@@ -247,11 +390,12 @@ export function UserMessage({
                     <ComposerContextCard
                       key={attachment.path}
                       variant={attachment.source === "workspace" ? "workspace" : "attachment"}
-                      tooltipLabel={attachment.source === "workspace" ? formatAttachmentRefForSubmit(attachment) : attachment.path}
+                      tooltipLabel={imagePreview ? `${t("imageViewer.clickToPreview")} — ${attachment.path}` : attachment.source === "workspace" ? formatAttachmentRefForSubmit(attachment) : attachment.path}
                       removeLabel={attachment.source === "workspace" ? t("composer.removeReference") : t("composer.removeImage")}
                       removeDisabled={editSubmitting}
                       onRemove={() => removeDraftAttachment(attachment.path)}
                       previewUrl={imagePreview}
+                      onImageClick={imagePreview ? () => openImageViewer(attachment.path, attachment.name) : undefined}
                       imageOnly={imageOnly}
                       folder={attachment.kind === "folder"}
                       label={attachment.kind === "folder" ? `${attachment.name}/` : attachment.name}
@@ -297,26 +441,78 @@ export function UserMessage({
             )}
           </div>
         ) : (
-          displayText && <div className="msg__text">{displayText}</div>
+          <>
+            {displaySegments.map((seg, i) => {
+              if (seg.type === "text") {
+                return seg.content ? <div className="msg__text" key={`s${i}`}>{seg.content}</div> : null;
+              }
+              const expanded = Boolean(expandedPasteLabels[seg.block.label]);
+              return (
+                <div className="msg-pasted" key={seg.block.label}>
+                  <div className="msg-pasted-block">
+                    <div className="msg-pasted-head">
+                      <FileText size={15} />
+                      <span className="msg-pasted-label">{seg.block.label}</span>
+                      <div className="msg-pasted-actions">
+                        <Tooltip label={t(expanded ? "msg.pastedCollapseTooltip" : "msg.pastedExpandTooltip")}>
+                          <button type="button" onClick={() => togglePasteExpand(seg.block.label)}>
+                            {expanded ? t("common.collapse") : t("composer.pastedExpand")}
+                          </button>
+                        </Tooltip>
+                      </div>
+                    </div>
+                    {expanded && (
+                      <div className="msg-pasted-expanded">{seg.block.content}</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </>
         )}
         {failed && <div className="msg__send-failed">{t("msg.sendFailed")}</div>}
         {orderedAttachments.length > 0 && (
           <div className="msg-attachments" aria-label={t("msg.attachments")}>
-            {orderedAttachments.map((attachment, index) => (
-              <div className={`msg-attachment msg-attachment--${attachment.kind}`} key={`${attachment.path}:${index}`} title={attachment.path}>
-                <span className={`msg-attachment__icon msg-attachment__icon--${attachment.kind}`} aria-hidden="true">
-                  {attachment.kind === "image" && imagePreviews[attachment.path] ? <img src={imagePreviews[attachment.path]} alt="" draggable={false} /> : attachmentIcon(attachment.kind)}
-                </span>
-                <span className="msg-attachment__main">
-                  <span className="msg-attachment__name">{attachment.name}</span>
-                  <span className="msg-attachment__meta">
-                    {attachment.kind === "folder"
-                      ? t("msg.folderReference")
-                      : `${attachment.ext || t("msg.fileAttachment")} · ${attachment.source === "workspace" ? t("msg.workspaceReference") : attachment.kind === "image" ? t("msg.imageAttachment") : t("msg.fileAttachment")}`}
+            {orderedAttachments.map((attachment, index) => {
+              const isImage = attachment.kind === "image";
+              const el = (
+                <div
+                  className={`msg-attachment msg-attachment--${attachment.kind}`}
+                  key={isImage ? undefined : `${attachment.path}:${index}`}
+                  title={isImage ? undefined : attachment.path}
+                  onClick={isImage ? () => openImageViewer(attachment.path, attachment.name) : undefined}
+                  role={isImage ? "button" : undefined}
+                  tabIndex={isImage ? 0 : undefined}
+                  onKeyDown={isImage ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openImageViewer(attachment.path, attachment.name); } } : undefined}
+                >
+                  <span className={`msg-attachment__icon msg-attachment__icon--${attachment.kind}`} aria-hidden="true">
+                    {isImage && imagePreviews[attachment.path] ? <img src={imagePreviews[attachment.path]} alt="" draggable={false} /> : attachmentIcon(attachment.kind)}
                   </span>
-                </span>
-              </div>
-            ))}
+                  <span className="msg-attachment__main">
+                    <span className="msg-attachment__name">{attachment.name}</span>
+                    <span className="msg-attachment__meta">
+                      {attachment.kind === "folder"
+                        ? t("msg.folderReference")
+                        : `${attachment.ext || t("msg.fileAttachment")} · ${attachment.source === "workspace" ? t("msg.workspaceReference") : attachment.kind === "image" ? t("msg.imageAttachment") : t("msg.fileAttachment")}`}
+                    </span>
+                  </span>
+                </div>
+              );
+              if (isImage) {
+                return (
+                  <Tooltip key={`${attachment.path}:${index}`} label={t("imageViewer.clickToPreview")} block>
+                    {el}
+                  </Tooltip>
+                );
+              }
+              return el;
+            })}
+            <ImageViewer
+              open={imageViewer.open}
+              imageUrl={imageViewer.url}
+              imageName={imageViewer.name}
+              onClose={closeImageViewer}
+            />
           </div>
         )}
       </div>
@@ -326,6 +522,11 @@ export function UserMessage({
             <time className="msg-meta__time" dateTime={sentAt.toISOString()} title={sentAt.toLocaleString()}>
               {formatMessageTime(sentAt)}
             </time>
+          )}
+          {hasMemoryCompiler && (
+            <span className="msg-meta__indicator" title={t("msg.memoryCompilerApplied")} aria-hidden="true">
+              <BrainCircuit size={14} />
+            </span>
           )}
           <CopyButton text={actionText} label={t("msg.copy")} showInlineLabel={false} className="msg-meta__btn msg-meta__copy" />
           {onEdit && (
@@ -356,6 +557,7 @@ export function TurnActions({
   actionPending = false,
   rewindDisabled = false,
   hoverMenus = false,
+  isLastTurn = false,
 }: {
   text: string;
   turn?: number;
@@ -366,6 +568,8 @@ export function TurnActions({
   actionPending?: boolean;
   rewindDisabled?: boolean;
   hoverMenus?: boolean;
+  /** true when this is the last user turn — disables "summarize after" */
+  isLastTurn?: boolean;
 }) {
   const t = useT();
   const [confirmScope, setConfirmScope] = useState<MessageActionScope | null>(null);
@@ -375,6 +579,9 @@ export function TurnActions({
     if (!checkpoint) return t("rewind.disabledNoCheckpoint");
     if ((scope === "fork" || scope === "summ-from" || scope === "conversation") && !checkpoint.canConversation) {
       return t("rewind.disabledNoBoundary");
+    }
+    if (scope === "summ-from" && isLastTurn) {
+      return t("rewind.disabledNoLater");
     }
     if (scope === "summ-upto") {
       if (!checkpoint.canConversation) return t("rewind.disabledNoBoundary");
@@ -420,10 +627,33 @@ export function TurnActions({
     }
   };
   const actionMeta = (scope: MessageActionScope): string => {
-    if ((scope === "code" || scope === "both") && checkpoint?.files?.length) {
-      return t("rewind.filesChanged", { count: checkpoint.files.length });
+    const total = checkpoint?.fileCount ?? checkpoint?.files?.length ?? 0;
+    if ((scope === "code" || scope === "both") && total > 0) {
+      const turnCount = checkpoint?.turnFileCount ?? 0;
+      if (turnCount > 0 && turnCount < total) {
+        return `${t("rewind.filesChanged", { count: total })} (${t("rewind.turnFiles", { count: turnCount })})`;
+      }
+      return t("rewind.filesChanged", { count: total });
     }
     return "";
+  };
+  const actionTooltipLabel = (scope: MessageActionScope) => {
+    const reason = actionDisabledReason(scope);
+    if (reason) return <span>{reason}</span>;
+    const files = checkpoint?.files ?? [];
+    const total = checkpoint?.fileCount ?? files.length;
+    if ((scope === "code" || scope === "both") && total > 0) {
+      const hidden = Math.max(0, total - files.length);
+      return (
+        <div className="rewind__files-tooltip">
+          {files.map((file) => (
+            <div key={file}>{file.split(/[/\\]/).pop() || file}</div>
+          ))}
+          {hidden > 0 && <div>+{hidden}</div>}
+        </div>
+      );
+    }
+    return undefined;
   };
   const runAction = (scope: MessageActionScope) => {
     setConfirmScope(null);
@@ -441,7 +671,8 @@ export function TurnActions({
   const renderAction = (scope: MessageActionScope, danger = false) => {
     const disabledReason = actionDisabledReason(scope);
     const meta = actionMeta(scope);
-    return (
+    const tipLabel = actionTooltipLabel(scope);
+    const button = (
       <button
         className={[
           "rewind__menu-item",
@@ -450,13 +681,14 @@ export function TurnActions({
         ].filter(Boolean).join(" ")}
         type="button"
         disabled={Boolean(disabledReason)}
-        title={disabledReason || undefined}
+        {...(tipLabel ? {} : { title: disabledReason || undefined })}
         onClick={() => selectRewind(scope)}
       >
         <span>{actionLabel(scope)}</span>
         {meta && <span className="rewind__menu-meta">{meta}</span>}
       </button>
     );
+    return tipLabel ? <Tooltip key={scope} label={tipLabel} side="top" block fill>{button}</Tooltip> : button;
   };
   const forkDisabledReason = canAct ? actionDisabledReason("fork") : "";
   const toggleMenu = (menu: TurnActionMenu) => {
@@ -538,18 +770,24 @@ export function TurnActions({
   );
 }
 
-export const AssistantMessage = memo(function AssistantMessage({
+function reasoningDurationLabel(durationMs: number | undefined, t: ReturnType<typeof useT>): string {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return t("msg.thinkingDone");
+  }
+  const seconds = Math.max(1, Math.round(durationMs / 1000));
+  return t("msg.thinkingDuration", { s: seconds });
+}
+
+function ReasoningPanel({
   item,
-  defaultExpanded = false,
-  expandWhileStreaming = true,
-  truncateStreamingReasoning = false,
+  defaultExpanded,
+  expandWhileStreaming,
+  truncateStreamingReasoning,
 }: {
   item: AssistantItem;
-  defaultExpanded?: boolean;
-  /** false in compact mode: completed steps fold away, so auto-open + fold reads as flicker. */
-  expandWhileStreaming?: boolean;
-  /** Opt-in for compact mode to keep live DeepSeek reasoning from growing an unbounded DOM. */
-  truncateStreamingReasoning?: boolean;
+  defaultExpanded: boolean;
+  expandWhileStreaming: boolean;
+  truncateStreamingReasoning: boolean;
 }) {
   const t = useT();
   const reasoningBodyRef = useRef<HTMLDivElement>(null);
@@ -577,7 +815,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       if (defaultExpanded) {
         setReasoningOpen(true);
       } else if (!userOverridden.current) {
-        setReasoningOpen(expandWhileStreaming);
+        setReasoningOpen(expandWhileStreaming && !nowRC);
       }
     } else if (nowRC && !wasRC) {
       // Reasoning just finished — auto-close while we wait for text.
@@ -596,41 +834,71 @@ export const AssistantMessage = memo(function AssistantMessage({
     userOverridden.current = true;
     setReasoningOpen((v) => !v);
   };
-  const hasText = item.streaming || item.text.trim() !== "";
-  const processOnly = Boolean(item.reasoning) && !hasText;
-  const processWithText = Boolean(item.reasoning) && hasText;
+  const isReasoningRunning = item.streaming && !item.reasoningComplete;
   const visibleReasoning = reasoningOpen
     ? displayReasoningText(item.reasoning, {
         streaming: item.streaming,
         truncateStreaming: truncateStreamingReasoning,
       })
     : "";
+  const label = isReasoningRunning ? t("msg.thinkingRunning") : t("msg.thinking");
+  const meta = isReasoningRunning ? "" : reasoningDurationLabel(item.reasoningDurationMs, t);
+
+  return (
+    <div className="reasoning">
+      <button
+        type="button"
+        className="reasoning__head"
+        data-running={isReasoningRunning ? "" : undefined}
+        onClick={toggleReasoning}
+        aria-expanded={reasoningOpen}
+      >
+        <ProcessBrainIcon size={12} />
+        <span data-creation-label={t("creation.reasoningLabel")}>{label}</span>
+        {meta && <span className="reasoning__meta">{meta}</span>}
+        <ChevronRight className={`reasoning__chevron${reasoningOpen ? " reasoning__chevron--open" : ""}`} size={12} />
+      </button>
+      {reasoningOpen && (
+        <div ref={reasoningBodyRef} className="reasoning__body">{visibleReasoning}</div>
+      )}
+    </div>
+  );
+}
+
+export const AssistantMessage = memo(function AssistantMessage({
+  item,
+  defaultExpanded = false,
+  expandWhileStreaming = true,
+  truncateStreamingReasoning = false,
+  creationMode = false,
+}: {
+  item: AssistantItem;
+  defaultExpanded?: boolean;
+  /** false in compact mode: completed steps fold away, so auto-open + fold reads as flicker. */
+  expandWhileStreaming?: boolean;
+  /** Opt-in for compact mode to keep live DeepSeek reasoning from growing an unbounded DOM. */
+  truncateStreamingReasoning?: boolean;
+  creationMode?: boolean;
+}) {
+  const hasText = item.streaming || item.text.trim() !== "";
+  const processOnly = Boolean(item.reasoning) && !hasText;
+  const processWithText = Boolean(item.reasoning) && hasText;
   return (
     <div className={`msg msg--assistant${processOnly ? " msg--process-only" : ""}${processWithText ? " msg--process-with-text" : ""}`} data-history-restore={item.id.startsWith("h") ? "" : undefined} data-entrance={item.id}>
       {item.reasoning && (
-        <div className="reasoning">
-          <button
-            type="button"
-            className="reasoning__head"
-            data-running={item.streaming && !item.reasoningComplete ? "" : undefined}
-            onClick={toggleReasoning}
-            aria-expanded={reasoningOpen}
-          >
-            <ProcessBrainIcon size={12} />
-            <span data-creation-label={t("creation.reasoningLabel")}>{t("msg.thinking")}</span>
-            <span className="reasoning__meta">{item.streaming && !item.reasoningComplete ? t("msg.thinkingRunning") : t("msg.thinkingDone")}</span>
-            <ChevronRight className={`reasoning__chevron${reasoningOpen ? " reasoning__chevron--open" : ""}`} size={12} />
-          </button>
-          {reasoningOpen && (
-            <div ref={reasoningBodyRef} className="reasoning__body">{visibleReasoning}</div>
-          )}
-        </div>
+        <ReasoningPanel
+          item={item}
+          defaultExpanded={defaultExpanded}
+          expandWhileStreaming={expandWhileStreaming}
+          truncateStreamingReasoning={truncateStreamingReasoning}
+        />
       )}
       {hasText && (
         <div className="msg__body">
-          <Markdown text={item.text} />
+          <Markdown text={item.text} plainStatusBlocks={creationMode} />
         </div>
       )}
+      <MemoryCitations citations={item.memoryCitations} />
     </div>
   );
 });

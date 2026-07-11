@@ -4,6 +4,8 @@ import {
   buildCrashPayload,
   buildPerformancePayload,
   formatPerformanceContext,
+  globalCrashReportReason,
+  installPerformancePressureMonitor,
   normalizeCrashError,
   parseReportedPerf,
   performanceLabelForReason,
@@ -80,6 +82,25 @@ eq(
   false,
   "checks ErrorEvent.error when ErrorEvent.message is a wrapper",
 );
+eq(
+  globalCrashReportReason({
+    defaultPrevented: false,
+    message: "Script error.",
+    filename: "wails://wails/assets/index-abc123.js",
+    lineno: 42,
+    colno: 7,
+  }),
+  "Script error.\nfilename=wails://wails/assets/index-abc123.js lineno=42 colno=7",
+  "adds script location to opaque window.error messages",
+);
+eq(
+  globalCrashReportReason({
+    defaultPrevented: false,
+    message: "Script error.",
+  }),
+  "Script error.",
+  "keeps opaque script errors bare when WebView provides no location",
+);
 
 const perf: PerformanceSnapshot = {
   reason: "event loop lag 1300ms",
@@ -130,6 +151,42 @@ eq(shouldPromptForPerformanceLabel(true, 11 * 60_000, false), false, "suppresses
 eq(shouldPromptForPerformanceLabel(false, 5 * 60_000, false), false, "respects the prompt cooldown window");
 eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, true), false, "never prompts while the window is hidden");
 eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "never prompts while unfocused");
+
+{
+  let interval: (() => void) | undefined;
+  let now = 0;
+  let promptPainted = false;
+  const previousWindow = (globalThis as any).window;
+  const previousDocument = (globalThis as any).document;
+  const previousPerformance = (globalThis as any).performance;
+  const previousPerformanceObserver = (globalThis as any).PerformanceObserver;
+  (globalThis as any).performance = { now: () => now };
+  (globalThis as any).window = {
+    runtime: {},
+    setInterval: (cb: () => void) => {
+      interval = cb;
+      return 1;
+    },
+  };
+  (globalThis as any).document = {
+    visibilityState: "visible",
+    hasFocus: () => true,
+    addEventListener: () => {},
+    getElementById: () => {
+      promptPainted = true;
+      return null;
+    },
+  };
+  (globalThis as any).PerformanceObserver = undefined;
+  installPerformancePressureMonitor();
+  now = 26_000;
+  interval?.();
+  eq(promptPainted, false, "first post-grace event-loop tick primes without reporting startup backlog");
+  (globalThis as any).window = previousWindow;
+  (globalThis as any).document = previousDocument;
+  (globalThis as any).performance = previousPerformance;
+  (globalThis as any).PerformanceObserver = previousPerformanceObserver;
+}
 
 const reportedPerf = serializeReportedPerf(new Set(["performance.lag"]), "abc123");
 eq([...parseReportedPerf(reportedPerf, "abc123")], ["performance.lag"], "round-trips reported labels for the same build");

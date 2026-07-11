@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 // TestComposeEmptyIsIdentity is the cache-first invariant: with no memory at
@@ -69,6 +71,20 @@ func TestDiscoverPrecedenceOrder(t *testing.T) {
 	}
 }
 
+func TestDiscoverDecodesGB18030PrimaryDoc(t *testing.T) {
+	proj := t.TempDir()
+	mustMkdir(t, filepath.Join(proj, ".git"))
+	body := "# 项目约定\n\n始终使用中文回答。"
+	if err := os.WriteFile(filepath.Join(proj, "AGENTS.md"), fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set := Load(Options{CWD: proj})
+	if len(set.Docs) != 1 || !strings.Contains(set.Docs[0].Body, "始终使用中文回答") {
+		t.Fatalf("decoded docs = %+v", set.Docs)
+	}
+}
+
 // TestImportResolution checks "@path" inlining, including a relative import.
 func TestImportResolution(t *testing.T) {
 	proj := t.TempDir()
@@ -86,6 +102,48 @@ func TestImportResolution(t *testing.T) {
 	}
 	if strings.Contains(body, "@shared.md") {
 		t.Fatalf("import directive left in body: %q", body)
+	}
+}
+
+func TestImportResolutionRejectsEscapes(t *testing.T) {
+	proj := t.TempDir()
+	mustMkdir(t, filepath.Join(proj, ".git"))
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.md"), "SECRET")
+	mustWrite(t, filepath.Join(proj, "REASONIX.md"), "Top\n@/abs/path.md\n@~/secret.md\n@../secret.md\nBottom")
+
+	set := Load(Options{CWD: proj})
+	if len(set.Docs) != 1 {
+		t.Fatalf("want 1 doc, got %d", len(set.Docs))
+	}
+	body := set.Docs[0].Body
+	if strings.Contains(body, "SECRET") {
+		t.Fatalf("unsafe import was inlined: %q", body)
+	}
+	for _, directive := range []string{"@/abs/path.md", "@~/secret.md", "@../secret.md"} {
+		if !strings.Contains(body, directive) {
+			t.Fatalf("unsafe directive %q should be left visible, body: %q", directive, body)
+		}
+	}
+}
+
+func TestImportResolutionRejectsSymlinkEscape(t *testing.T) {
+	proj := t.TempDir()
+	mustMkdir(t, filepath.Join(proj, ".git"))
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.md"), "SECRET")
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(proj, "linked.md")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	mustWrite(t, filepath.Join(proj, "REASONIX.md"), "Top\n@linked.md\nBottom")
+
+	set := Load(Options{CWD: proj})
+	if len(set.Docs) != 1 {
+		t.Fatalf("want 1 doc, got %d", len(set.Docs))
+	}
+	body := set.Docs[0].Body
+	if strings.Contains(body, "SECRET") || !strings.Contains(body, "@linked.md") {
+		t.Fatalf("symlink escape should not be inlined, body: %q", body)
 	}
 }
 

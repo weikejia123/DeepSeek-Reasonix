@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// --- Spec.enforce ---
+// --- Spec.Enforce ---
 
 func TestEnforce(t *testing.T) {
 	cases := []struct {
@@ -22,8 +22,8 @@ func TestEnforce(t *testing.T) {
 	}
 	for _, c := range cases {
 		s := Spec{Mode: c.mode}
-		if got := s.enforce(); got != c.want {
-			t.Errorf("Spec{%q}.enforce() = %v, want %v", c.mode, got, c.want)
+		if got := s.Enforce(); got != c.want {
+			t.Errorf("Spec{%q}.Enforce() = %v, want %v", c.mode, got, c.want)
 		}
 	}
 }
@@ -32,7 +32,7 @@ func TestEnforce(t *testing.T) {
 
 func TestSpecZeroValue(t *testing.T) {
 	var s Spec
-	if s.enforce() {
+	if s.Enforce() {
 		t.Error("zero-value Spec should not enforce")
 	}
 	if s.Network {
@@ -40,6 +40,19 @@ func TestSpecZeroValue(t *testing.T) {
 	}
 	if len(s.WriteRoots) != 0 {
 		t.Error("zero-value Spec should have no write roots")
+	}
+}
+
+func TestUnavailableMessageIsActionable(t *testing.T) {
+	msg := UnavailableMessage()
+	for _, want := range []string{
+		"refusing to run unconfined",
+		`[sandbox] bash = "off"`,
+		"Settings -> Sandbox",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("UnavailableMessage() = %q, want %q", msg, want)
+		}
 	}
 }
 
@@ -251,8 +264,14 @@ func TestCommandNonDarwin(t *testing.T) {
 	}
 	spec := Spec{Mode: "enforce", WriteRoots: []string{"/tmp"}}
 	cmd, wrapped := Command(spec, Shell{Kind: ShellBash, Path: "sh"}, "echo hi")
+	if Available() {
+		if !wrapped || cmd[0] == "sh" {
+			t.Fatalf("non-darwin enforce with available sandbox should wrap: %v wrapped=%v", cmd, wrapped)
+		}
+		return
+	}
 	if wrapped {
-		t.Error("non-darwin should never wrap")
+		t.Error("non-darwin without sandbox should not wrap")
 	}
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" || cmd[2] != "echo hi" {
 		t.Errorf("unexpected cmd: %v", cmd)
@@ -296,7 +315,11 @@ func TestAvailableNonDarwin(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("testing non-darwin path")
 	}
-	if Available() {
-		t.Error("non-darwin should report unavailable")
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has its own helper-backed sandbox availability")
+	}
+	_, err := exec.LookPath("bwrap")
+	if Available() != (err == nil) {
+		t.Errorf("Available() = %v, bwrap err = %v", Available(), err)
 	}
 }

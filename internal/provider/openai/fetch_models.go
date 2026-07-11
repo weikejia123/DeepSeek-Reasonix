@@ -17,6 +17,19 @@ type modelFetchStatusError struct {
 	body   string
 }
 
+type ModelFetchAuthMode string
+
+const (
+	ModelFetchAuthAuto    ModelFetchAuthMode = ""
+	ModelFetchAuthBearer  ModelFetchAuthMode = "bearer"
+	ModelFetchAuthXAPIKey ModelFetchAuthMode = "x-api-key"
+)
+
+type FetchModelsOptions struct {
+	Headers  map[string]string
+	AuthMode ModelFetchAuthMode
+}
+
 func (e modelFetchStatusError) Error() string {
 	return fmt.Sprintf("fetch models: status %d: %s", e.status, strings.TrimSpace(e.body))
 }
@@ -33,7 +46,13 @@ func IsModelFetchEndpointMiss(err error) bool {
 
 // FetchModels calls the OpenAI-compatible GET /models endpoint and returns the
 // available model IDs.
-func FetchModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
+func FetchModels(ctx context.Context, baseURL, apiKey string, headers map[string]string) ([]string, error) {
+	return FetchModelsWithOptions(ctx, baseURL, apiKey, FetchModelsOptions{Headers: headers})
+}
+
+// FetchModelsWithOptions calls the OpenAI-compatible GET /models endpoint and
+// returns the available model IDs.
+func FetchModelsWithOptions(ctx context.Context, baseURL, apiKey string, opts FetchModelsOptions) ([]string, error) {
 	cli := &http.Client{Timeout: 10 * time.Second}
 	url := strings.TrimRight(baseURL, "/")
 	if !strings.HasSuffix(url, "/models") {
@@ -44,10 +63,9 @@ func FetchModels(ctx context.Context, baseURL, apiKey string) ([]string, error) 
 	if err != nil {
 		return nil, fmt.Errorf("fetch models: build request: %w", err)
 	}
-	if strings.TrimSpace(apiKey) != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	applyModelFetchAPIKeyHeader(req.Header, baseURL, apiKey, opts.AuthMode)
 	req.Header.Set("Accept", "application/json")
+	applyCustomHeaders(req.Header, opts.Headers)
 
 	resp, err := cli.Do(req)
 	if err != nil {
@@ -81,6 +99,21 @@ func FetchModels(ctx context.Context, baseURL, apiKey string) ([]string, error) 
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+func applyModelFetchAPIKeyHeader(h http.Header, baseURL, apiKey string, mode ModelFetchAuthMode) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return
+	}
+	switch mode {
+	case ModelFetchAuthBearer:
+		h.Set("Authorization", "Bearer "+apiKey)
+	case ModelFetchAuthXAPIKey:
+		h.Set("x-api-key", apiKey)
+	default:
+		applyAPIKeyHeader(h, baseURL, apiKey)
+	}
 }
 
 func truncateFetchBody(body string) string {

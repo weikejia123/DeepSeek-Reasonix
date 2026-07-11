@@ -15,9 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"reasonix/internal/bot"
+	"reasonix/internal/textutil"
 
 	"golang.org/x/net/websocket"
 )
@@ -33,6 +33,7 @@ const (
 	qqMaxHeartbeat                 = time.Minute
 	qqStartupValidationTimeout     = 10 * time.Second
 	qqPassiveReplyTruncationNotice = "\n\n[Truncated: QQ allows at most 5 passive replies for one incoming message.]"
+	qqHTTPTimeout                  = 30 * time.Second
 
 	opDispatch     = 0
 	opHeartbeat    = 1
@@ -45,6 +46,8 @@ const (
 )
 
 var qqMarkdownWrapperRe = regexp.MustCompile("(?is)^```(?:markdown|md)\\s*\\r?\\n([\\s\\S]*?)\\r?\\n```$")
+
+var qqHTTPClient = &http.Client{Timeout: qqHTTPTimeout}
 
 var allowedGatewayHosts = []string{
 	"api.sgroup.qq.com",
@@ -106,26 +109,16 @@ type wsClient struct {
 }
 
 func (a *adapter) gatewayLoop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
+	bot.RunWithRetry(ctx, a.logger, "qq gateway", bot.RetryConfig{}, func(ctx context.Context) error {
 		token, err := a.getAccessToken(ctx)
 		if err != nil {
-			a.logger.Error("get access token failed", "err", err)
-			time.Sleep(5 * time.Second)
-			continue
+			return err
 		}
-
-		if err := a.connectGateway(ctx, token); err != nil {
-			a.logger.Error("gateway connection failed", "err", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-	}
+		// connectGateway blocks for the connection's lifetime, returning on
+		// disconnect or error; RunWithRetry handles the cancellation-aware
+		// backoff and reconnect.
+		return a.connectGateway(ctx, token)
+	})
 }
 
 func (a *adapter) getAccessToken(ctx context.Context) (string, error) {
@@ -143,7 +136,7 @@ func (a *adapter) getAccessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("qq app_id is empty")
 	}
 	if appSecret == "" {
-		return "", fmt.Errorf("qq app secret is empty: set %s or QQ_SECRET", a.appSecretEnvName())
+		return "", fmt.Errorf("qq app secret is empty: set the %s environment variable", a.appSecretEnvName())
 	}
 	body, err := json.Marshal(map[string]string{
 		"appId":        appID,
@@ -159,7 +152,7 @@ func (a *adapter) getAccessToken(ctx context.Context) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := qqHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -372,10 +365,7 @@ func (a *adapter) appSecretEnvName() string {
 }
 
 func (a *adapter) appSecret() string {
-	if value := strings.TrimSpace(os.Getenv(a.appSecretEnvName())); value != "" {
-		return value
-	}
-	return strings.TrimSpace(os.Getenv("QQ_SECRET"))
+	return strings.TrimSpace(os.Getenv(a.appSecretEnvName()))
 }
 
 func (a *adapter) apiBaseURL() string {
@@ -391,7 +381,7 @@ func (a *adapter) getGatewayURL(ctx context.Context, token string) (string, erro
 		return "", err
 	}
 	req.Header.Set("Authorization", "QQBot "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := qqHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -525,7 +515,7 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 	if truncated {
 		a.logger.Warn("qq passive reply truncated", "chat_type", msg.ChatType, "chunks", originalChunkCount, "limit", len(chunks))
 	}
-	var last bot.SendResult
+	var delivered bot.SendResult
 	for _, chunk := range chunks {
 		seq := a.nextMessageSeq(msg.ReplyToMsgID)
 		var result bot.SendResult
@@ -542,12 +532,12 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 		}
 		if err != nil {
 			a.logger.Error("qq message send failed", "chat_type", msg.ChatType, "err", err)
-			return last, err
+			return delivered, err
 		}
 		a.logger.Info("qq message sent", "chat_type", msg.ChatType, "message_id_set", strings.TrimSpace(result.MessageID) != "")
-		last = result
+		delivered.Merge(result)
 	}
-	return last, nil
+	return delivered, nil
 }
 
 func (a *adapter) sendPlainMessageChunk(ctx context.Context, msg bot.OutboundMessage, text string, seq int) (bot.SendResult, error) {
@@ -616,7 +606,7 @@ func (a *adapter) sendMessagePayload(ctx context.Context, msg bot.OutboundMessag
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Union-Appid", a.appID())
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := qqHTTPClient.Do(req)
 	if err != nil {
 		return bot.SendResult{}, err
 	}
@@ -741,33 +731,7 @@ func fitQQChunkWithSuffix(text, suffix string, maxBytes int) string {
 }
 
 func fitUTF8Slice(text string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	end := 0
-	used := 0
-	for len(text[end:]) > 0 {
-		r, size := utf8.DecodeRuneInString(text[end:])
-		if r == utf8.RuneError && size == 0 {
-			break
-		}
-		if used > 0 && used+size > maxBytes {
-			break
-		}
-		end += size
-		used += size
-		if used >= maxBytes {
-			break
-		}
-	}
-	if end > 0 {
-		return text[:end]
-	}
-	_, size := utf8.DecodeRuneInString(text)
-	if size == 0 {
-		return ""
-	}
-	return text[:size]
+	return textutil.FitGraphemeBytes(text, maxBytes)
 }
 
 func pickNaturalSplit(candidate string) int {

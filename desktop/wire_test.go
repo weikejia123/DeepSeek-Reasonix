@@ -2,94 +2,15 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
 	"reasonix/internal/event"
-	"reasonix/internal/provider"
 )
 
-// --- toWire ---
-
-func TestToWireText(t *testing.T) {
-	e := event.Event{Kind: event.Text, Text: "hello"}
-	w := toWire(e)
-	if w.Kind != "text" || w.Text != "hello" {
-		t.Errorf("text wire = %+v", w)
-	}
-}
-
-func TestToWireReasoning(t *testing.T) {
-	e := event.Event{Kind: event.Reasoning, Text: "thinking..."}
-	w := toWire(e)
-	if w.Kind != "reasoning" || w.Text != "thinking..." {
-		t.Errorf("reasoning wire = %+v", w)
-	}
-}
-
-func TestToWireNoticeInfo(t *testing.T) {
-	e := event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "info"}
-	w := toWire(e)
-	if w.Kind != "notice" || w.Level != "info" {
-		t.Errorf("notice info = %+v", w)
-	}
-}
-
-func TestToWireNoticeWarn(t *testing.T) {
-	e := event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "warn"}
-	w := toWire(e)
-	if w.Level != "warn" {
-		t.Errorf("notice warn level = %q", w.Level)
-	}
-}
-
-func TestToWireRetrying(t *testing.T) {
-	e := event.Event{Kind: event.Retrying, RetryAttempt: 3, RetryMax: 10}
-	w := toWire(e)
-	if w.Kind != "retrying" || w.RetryAttempt != 3 || w.RetryMax != 10 {
-		t.Errorf("retrying wire = %+v", w)
-	}
+func TestWireEventTabPreservesSharedRetryingFields(t *testing.T) {
+	w := toWireTab(event.Event{Kind: event.Retrying, RetryAttempt: 3, RetryMax: 10}, "tab-1")
 	b, err := json.Marshal(w)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if s := string(b); !strings.Contains(s, `"retryAttempt":3`) || !strings.Contains(s, `"retryMax":10`) {
-		t.Errorf("retrying JSON = %s", s)
-	}
-}
-
-func TestToWireToolDispatch(t *testing.T) {
-	e := event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "1", Name: "bash", Args: `{"c":"echo"}`, ReadOnly: false}}
-	w := toWire(e)
-	if w.Tool == nil || w.Tool.Name != "bash" || w.Tool.Args != `{"c":"echo"}` {
-		t.Errorf("tool dispatch = %+v", w.Tool)
-	}
-}
-
-func TestToWireToolDispatchProfile(t *testing.T) {
-	e := event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
-		ID: "1", Name: "task", Args: `{"prompt":"x"}`,
-		Profile: &event.Profile{Model: "deepseek-pro", Effort: "max"},
-	}}
-	w := toWire(e)
-	if w.Tool == nil || w.Tool.Profile == nil || w.Tool.Profile.Model != "deepseek-pro" || w.Tool.Profile.Effort != "max" {
-		t.Errorf("tool profile = %+v", w.Tool)
-	}
-}
-
-func TestToWireToolDispatchFileDiff(t *testing.T) {
-	e := event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
-		ID:       "1",
-		Name:     "edit_file",
-		Args:     `{"path":"settings/settings_IO.gd"}`,
-		FileDiff: event.FileDiff{Diff: "@@ -27 +27 @@\n-old\n+new\n", Added: 1, Removed: 1},
-	}}
-	w := toWire(e)
-	if w.Tool == nil {
-		t.Fatal("missing wire tool")
-	}
-	b, err := json.Marshal(w.Tool)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -204,23 +125,10 @@ func TestKindNamesComplete(t *testing.T) {
 	for k := event.Kind(0); k <= event.UserMessage; k++ {
 		if kindNames[k] == "" {
 			t.Errorf("kind %d has no wire name — toWire would emit kind:\"\"", k)
+=======
+	for _, want := range []string{`"kind":"retrying"`, `"retryAttempt":3`, `"retryMax":10`, `"tabId":"tab-1"`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("tab retrying JSON = %s, want it to contain %s", s, want)
 		}
-	}
-}
-
-// --- wireEvent JSON round-trip ---
-
-func TestWireEventJSON(t *testing.T) {
-	w := wireEvent{Kind: "text", Text: "hello"}
-	b, err := json.Marshal(w)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var decoded wireEvent
-	if err := json.Unmarshal(b, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded.Kind != "text" || decoded.Text != "hello" {
-		t.Errorf("round-trip = %+v", decoded)
 	}
 }

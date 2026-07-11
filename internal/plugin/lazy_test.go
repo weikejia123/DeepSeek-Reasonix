@@ -72,6 +72,19 @@ func waitForServer(t *testing.T, host *Host, name string, timeout time.Duration)
 	t.Fatalf("server %q never appeared in host.ServerNames() within %v (got %v)", name, timeout, host.ServerNames())
 }
 
+func waitForCachedSchema(t *testing.T, spec Spec, timeout time.Duration) *CachedSchema {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec)); ok {
+			return cs
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("cached schema for %q never appeared within %v", spec.Name, timeout)
+	return nil
+}
+
 // TestLazyCacheHitSyncSpawn drives the cache-hit branch end-to-end: cache is
 // pre-populated, the model can see real schemas before any spawn, and the
 // first Execute synchronously handshakes, swaps the placeholder for the real
@@ -133,13 +146,25 @@ func TestLazyCacheHitSyncSpawn(t *testing.T) {
 		t.Fatalf("host.ServerNames() = %v, want [mock]", names)
 	}
 
-	// After Execute, the registry entry must be the real *remoteTool, not the
-	// placeholder. Subsequent calls bypass the state machine and Execute
-	// directly. Compare via type name so this test doesn't need to import the
-	// unexported type by name.
+	// After Execute, the registry entry must STILL be the placeholder: cache-hit
+	// placeholders are pinned for the whole session so the request's tools
+	// array stays byte-identical even when the live handshake differs from the
+	// cache (see trySwap). Execution keeps forwarding to the real tool through
+	// the shared spawn state.
 	echoAfter, _ := reg.Get("mcp__mock__echo")
-	if got := fmt.Sprintf("%T", echoAfter); !strings.Contains(got, "remoteTool") {
-		t.Fatalf("post-Execute echo should be a remoteTool, got %s", got)
+	if _, isLazy := echoAfter.(*lazyTool); !isLazy {
+		t.Fatalf("post-Execute echo should remain the pinned *lazyTool, got %T", echoAfter)
+	}
+	if got := string(echoAfter.Schema()); got != gotSchema {
+		t.Fatalf("registry schema bytes changed across the handshake:\nbefore: %s\nafter:  %s", gotSchema, got)
+	}
+	// Second call goes straight through the ready state to the real tool.
+	out2, err := echoAfter.Execute(ctx, json.RawMessage(`{"msg":"again"}`))
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	if out2 != "echo: again" {
+		t.Fatalf("second Execute result = %q, want %q", out2, "echo: again")
 	}
 }
 
@@ -272,9 +297,8 @@ func TestLazyCacheHitStartupTimeoutCanRetry(t *testing.T) {
 func TestLazyToolsetAppliesSpecReadOnlyOverrideToCachedTools(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
-	cachedSpec := spec
-	writeMockCache(t, cachedSpec)
 	spec.ReadOnlyToolNames = map[string]bool{"echo": true}
+	writeMockCache(t, spec)
 
 	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
 	if !ok {
@@ -457,6 +481,35 @@ func TestLazyBackgroundKick(t *testing.T) {
 	// One spawn, not two — kick + Execute must collapse onto the same run.
 	if names := host.ServerNames(); len(names) != 1 {
 		t.Fatalf("host.ServerNames() = %v, want exactly one 'mock'", names)
+	}
+}
+
+func TestLazyBackgroundCacheMissPersistsSchema(t *testing.T) {
+	redirectCache(t)
+	spec := helperSpec()
+
+	host := NewHost()
+	defer host.Close()
+	reg := tool.NewRegistry()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tools := LazyToolset(spec, nil, host, reg, ctx, true) // cache miss + background kick
+	for _, lt := range tools {
+		reg.Add(lt)
+	}
+
+	waitForServer(t, host, "mock", 5*time.Second)
+	cs := waitForCachedSchema(t, spec, 5*time.Second)
+	if len(cs.Tools) != 2 {
+		t.Fatalf("cached schema has %d tools, want 2", len(cs.Tools))
+	}
+	got := map[string]bool{}
+	for _, ct := range cs.Tools {
+		got[ct.Name] = true
+	}
+	if !got["echo"] || !got["zed"] {
+		t.Fatalf("cached tools = %v, want echo and zed", got)
 	}
 }
 
@@ -681,5 +734,114 @@ func TestLazyToolsetCacheHitSchemaVisible(t *testing.T) {
 	// optimisation is moot.
 	if names := host.ServerNames(); len(names) != 0 {
 		t.Fatalf("Schema() must not spawn; host.ServerNames() = %v", names)
+	}
+}
+
+// registrySchemaBytes marshals the registry's full tool schemas — the exact
+// surface that feeds the provider request's tools array.
+func registrySchemaBytes(t *testing.T, reg *tool.Registry) string {
+	t.Helper()
+	b, err := json.Marshal(reg.Schemas())
+	if err != nil {
+		t.Fatalf("marshal schemas: %v", err)
+	}
+	return string(b)
+}
+
+// TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake is the session
+// byte-stability guard: the cached snapshot deliberately DIFFERS from what the
+// live handshake will report (stale description/schema, and it omits one tool
+// the live server exposes). After the background spawn completes, the
+// registry's schema bytes must be identical to what the model saw at boot —
+// the divergence surfaces in the refreshed disk cache (next session), never
+// mid-session in the tools array.
+func TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake(t *testing.T) {
+	redirectCache(t)
+	spec := helperSpec()
+	stale := CachedSchema{
+		SpecHash:     SpecFingerprint(spec),
+		Capabilities: map[string]bool{},
+		Tools: []CachedTool{{
+			Name:        "echo",
+			Description: "STALE description from a previous session.",
+			Schema:      json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`),
+			// live handshake also exposes "zed" — absent here on purpose.
+		}},
+	}
+	if err := SaveCachedSchema(spec.Name, stale); err != nil {
+		t.Fatalf("SaveCachedSchema: %v", err)
+	}
+	cs, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+	if !ok {
+		t.Fatal("LoadCachedSchema miss after save")
+	}
+
+	host := NewHost()
+	defer host.Close()
+	reg := tool.NewRegistry()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	for _, lt := range LazyToolset(spec, cs, host, reg, ctx, true) {
+		reg.Add(lt)
+	}
+	bootBytes := registrySchemaBytes(t, reg)
+
+	// Let the background handshake finish and give trySwap every chance to run.
+	waitForServer(t, host, "mock", 5*time.Second)
+	echo, _ := reg.Get("mcp__mock__echo")
+	if out, err := echo.Execute(ctx, json.RawMessage(`{"msg":"pin"}`)); err != nil || out != "echo: pin" {
+		t.Fatalf("Execute after ready = %q, %v", out, err)
+	}
+
+	if got := registrySchemaBytes(t, reg); got != bootBytes {
+		t.Fatalf("tools array bytes changed mid-session after a divergent handshake:\nboot: %s\nnow:  %s", bootBytes, got)
+	}
+	if _, found := reg.Get("mcp__mock__zed"); found {
+		t.Fatal("live-only tool joined the registry mid-session; it must wait for the next session")
+	}
+
+	// The refreshed cache carries the live truth for the NEXT session. The
+	// stale cache this test wrote is itself loadable, so poll until the
+	// refresh actually lands (the background save races Execute's return on
+	// slow machines) rather than accepting the first loadable snapshot.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		refreshed, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+		if ok {
+			names := map[string]bool{}
+			for _, ct := range refreshed.Tools {
+				names[ct.Name] = true
+			}
+			if names["echo"] && names["zed"] {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("refreshed cache tools = %v, want live set {echo, zed}", refreshed.Tools)
+			}
+		} else if time.Now().After(deadline) {
+			t.Fatal("cached schema never became loadable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestLazyEmptyCachedToolsFallsBackToConnectStub: a snapshot with zero tools
+// presents nothing the model could call, so it must take the cache-miss stub
+// path instead of letting live tools join the registry mid-session unnamed.
+func TestLazyEmptyCachedToolsFallsBackToConnectStub(t *testing.T) {
+	redirectCache(t)
+	spec := helperSpec()
+	cs := &CachedSchema{SpecHash: SpecFingerprint(spec), Tools: nil}
+
+	host := NewHost()
+	defer host.Close()
+	reg := tool.NewRegistry()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	if len(tools) != 1 || tools[0].Name() != "mcp__mock__connect" {
+		t.Fatalf("empty-cache toolset = %v, want single connect stub", tools)
 	}
 }
