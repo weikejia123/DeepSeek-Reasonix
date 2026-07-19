@@ -1,0 +1,1049 @@
+{
+  "schema_version": "3",
+  "scanned_at": "2026-07-19T18:19:57Z",
+  "tech_stack": [
+    {
+      "name": "@gsap/react",
+      "category": "library",
+      "version": "^2.1.2",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "@tanstack/react-virtual",
+      "category": "library",
+      "version": "^3.14.3",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "@types/jsdom",
+      "category": "library",
+      "version": "^28.0.3",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "@types/node",
+      "category": "library",
+      "version": "^26.0.0",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "@types/react",
+      "category": "library",
+      "version": "^19.2.17",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "@types/react-dom",
+      "category": "library",
+      "version": "^19.2.3",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "@vitejs/plugin-react",
+      "category": "library",
+      "version": "^6.0.2",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "React",
+      "category": "framework",
+      "version": "^19.2.7",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "React DOM",
+      "category": "library",
+      "version": "^19.2.7",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "TypeScript",
+      "category": "tool",
+      "version": "^6.0.3",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "Vite",
+      "category": "tool",
+      "version": "^8.0.16",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "Zustand",
+      "category": "library",
+      "version": "^5.0.14",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "gsap",
+      "category": "library",
+      "version": "^3.15.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "highlight.js",
+      "category": "library",
+      "version": "^11.10.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "jsdom",
+      "category": "library",
+      "version": "^29.1.1",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "katex",
+      "category": "library",
+      "version": "^0.17.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "lucide-react",
+      "category": "library",
+      "version": "^1.21.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "mermaid",
+      "category": "library",
+      "version": "^11.16.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "qrcode.react",
+      "category": "library",
+      "version": "^4.2.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "react-markdown",
+      "category": "library",
+      "version": "^10.1.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "rehype-katex",
+      "category": "library",
+      "version": "^7.0.1",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "remark-gfm",
+      "category": "library",
+      "version": "^4.0.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "remark-math",
+      "category": "library",
+      "version": "^6.0.0",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "svg-pan-zoom",
+      "category": "library",
+      "version": "^3.6.2",
+      "dev": false,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "terser",
+      "category": "library",
+      "version": "^5.48.0",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "tsx",
+      "category": "library",
+      "version": "^4.22.4",
+      "dev": true,
+      "source": "desktop/frontend/package.json"
+    },
+    {
+      "name": "Echo",
+      "category": "framework",
+      "version": "v4.15.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "aead.dev/minisign",
+      "category": "library",
+      "version": "v0.3.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "fyne.io/systray",
+      "category": "library",
+      "version": "v1.12.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "git.sr.ht/~jackmordaunt/go-toast/v2",
+      "category": "library",
+      "version": "v2.0.3",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/BurntSushi/toml",
+      "category": "library",
+      "version": "v1.6.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/aymanbagabas/go-udiff",
+      "category": "library",
+      "version": "v0.4.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/bep/debounce",
+      "category": "library",
+      "version": "v1.2.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/bmatcuk/doublestar/v4",
+      "category": "library",
+      "version": "v4.10.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/clipperhouse/uax29/v2",
+      "category": "library",
+      "version": "v2.7.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/danieljoos/wincred",
+      "category": "library",
+      "version": "v1.2.3",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/go-ole/go-ole",
+      "category": "library",
+      "version": "v1.3.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/godbus/dbus/v5",
+      "category": "library",
+      "version": "v5.2.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/gogo/protobuf",
+      "category": "library",
+      "version": "v1.3.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/google/uuid",
+      "category": "library",
+      "version": "v1.6.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/gorilla/websocket",
+      "category": "library",
+      "version": "v1.5.3",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/jchv/go-winloader",
+      "category": "library",
+      "version": "v0.0.0-20250406163304-c1995be93bd1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/joho/godotenv",
+      "category": "library",
+      "version": "v1.5.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/labstack/gommon",
+      "category": "library",
+      "version": "v0.5.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/larksuite/oapi-sdk-go/v3",
+      "category": "library",
+      "version": "v3.9.5",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/leaanthony/go-ansi-parser",
+      "category": "library",
+      "version": "v1.6.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/leaanthony/gosod",
+      "category": "library",
+      "version": "v1.0.4",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/leaanthony/slicer",
+      "category": "library",
+      "version": "v1.6.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/leaanthony/u",
+      "category": "library",
+      "version": "v1.1.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/mattn/go-colorable",
+      "category": "library",
+      "version": "v0.1.15",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/mattn/go-isatty",
+      "category": "library",
+      "version": "v0.0.22",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/mattn/go-pointer",
+      "category": "library",
+      "version": "v0.0.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/mattn/go-runewidth",
+      "category": "library",
+      "version": "v0.0.24",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/minio/selfupdate",
+      "category": "library",
+      "version": "v0.6.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/pkg/browser",
+      "category": "library",
+      "version": "v0.0.0-20240102092130-5ac0b6a4141c",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/pkg/errors",
+      "category": "library",
+      "version": "v0.9.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/rivo/uniseg",
+      "category": "library",
+      "version": "v0.4.7",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/sabhiram/go-gitignore",
+      "category": "library",
+      "version": "v0.0.0-20210923224102-525f6e181f06",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/samber/lo",
+      "category": "library",
+      "version": "v1.53.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tkrajina/go-reflector",
+      "category": "library",
+      "version": "v0.5.8",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/go-tree-sitter",
+      "category": "library",
+      "version": "v0.25.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-javascript",
+      "category": "library",
+      "version": "v0.25.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-python",
+      "category": "library",
+      "version": "v0.25.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-rust",
+      "category": "library",
+      "version": "v0.24.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-typescript",
+      "category": "library",
+      "version": "v0.23.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/valyala/bytebufferpool",
+      "category": "library",
+      "version": "v1.0.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/valyala/fasttemplate",
+      "category": "library",
+      "version": "v1.2.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/wailsapp/go-webview2",
+      "category": "library",
+      "version": "v1.0.23",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/wailsapp/mimetype",
+      "category": "library",
+      "version": "v1.4.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/wailsapp/wails/v2",
+      "category": "library",
+      "version": "v2.12.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/zalando/go-keyring",
+      "category": "library",
+      "version": "v0.2.8",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "golang.org/x/crypto",
+      "category": "library",
+      "version": "v0.53.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "golang.org/x/image",
+      "category": "library",
+      "version": "v0.43.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "golang.org/x/mod",
+      "category": "library",
+      "version": "v0.37.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "golang.org/x/net",
+      "category": "library",
+      "version": "v0.56.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "golang.org/x/sys",
+      "category": "library",
+      "version": "v0.46.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "golang.org/x/text",
+      "category": "library",
+      "version": "v0.38.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "gopkg.in/yaml.v3",
+      "category": "library",
+      "version": "v3.0.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "mvdan.cc/sh/v3",
+      "category": "library",
+      "version": "v3.13.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "reasonix",
+      "category": "library",
+      "version": "v0.0.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "charm.land/bubbles/v2",
+      "category": "library",
+      "version": "v2.1.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "charm.land/bubbletea/v2",
+      "category": "library",
+      "version": "v2.0.7",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "charm.land/lipgloss/v2",
+      "category": "library",
+      "version": "v2.0.4",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "git.sr.ht/~jackmordaunt/go-toast/v2",
+      "category": "library",
+      "version": "v2.0.3",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/BurntSushi/toml",
+      "category": "library",
+      "version": "v1.6.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/alecthomas/chroma/v2",
+      "category": "library",
+      "version": "v2.27.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/atotto/clipboard",
+      "category": "library",
+      "version": "v0.1.4",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/aymanbagabas/go-udiff",
+      "category": "library",
+      "version": "v0.4.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/bmatcuk/doublestar/v4",
+      "category": "library",
+      "version": "v4.10.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/charmbracelet/colorprofile",
+      "category": "library",
+      "version": "v0.4.3",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/charmbracelet/ultraviolet",
+      "category": "library",
+      "version": "v0.0.0-20260601155805-6cf7526a1b3f",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/charmbracelet/x/ansi",
+      "category": "library",
+      "version": "v0.11.7",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/charmbracelet/x/term",
+      "category": "library",
+      "version": "v0.2.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/charmbracelet/x/termios",
+      "category": "library",
+      "version": "v0.1.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/charmbracelet/x/windows",
+      "category": "library",
+      "version": "v0.2.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/clipperhouse/displaywidth",
+      "category": "library",
+      "version": "v0.11.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/clipperhouse/uax29/v2",
+      "category": "library",
+      "version": "v2.7.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/danieljoos/wincred",
+      "category": "library",
+      "version": "v1.2.3",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/dlclark/regexp2/v2",
+      "category": "library",
+      "version": "v2.2.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/go-ole/go-ole",
+      "category": "library",
+      "version": "v1.3.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/godbus/dbus/v5",
+      "category": "library",
+      "version": "v5.2.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/gogo/protobuf",
+      "category": "library",
+      "version": "v1.3.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/gorilla/websocket",
+      "category": "library",
+      "version": "v1.5.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/joho/godotenv",
+      "category": "library",
+      "version": "v1.5.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/larksuite/oapi-sdk-go/v3",
+      "category": "library",
+      "version": "v3.9.5",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/lucasb-eyer/go-colorful",
+      "category": "library",
+      "version": "v1.4.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/mattn/go-pointer",
+      "category": "library",
+      "version": "v0.0.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/mattn/go-runewidth",
+      "category": "library",
+      "version": "v0.0.24",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/muesli/cancelreader",
+      "category": "library",
+      "version": "v0.2.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/rivo/uniseg",
+      "category": "library",
+      "version": "v0.4.7",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/sabhiram/go-gitignore",
+      "category": "library",
+      "version": "v0.0.0-20210923224102-525f6e181f06",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/go-tree-sitter",
+      "category": "library",
+      "version": "v0.25.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-javascript",
+      "category": "library",
+      "version": "v0.25.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-python",
+      "category": "library",
+      "version": "v0.25.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-rust",
+      "category": "library",
+      "version": "v0.24.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/tree-sitter/tree-sitter-typescript",
+      "category": "library",
+      "version": "v0.23.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/xo/terminfo",
+      "category": "library",
+      "version": "v0.0.0-20220910002029-abceb7e1c41e",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/yuin/goldmark",
+      "category": "library",
+      "version": "v1.8.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/zalando/go-keyring",
+      "category": "library",
+      "version": "v0.2.8",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "go.uber.org/goleak",
+      "category": "library",
+      "version": "v1.3.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/crypto",
+      "category": "library",
+      "version": "v0.53.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/image",
+      "category": "library",
+      "version": "v0.43.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/mod",
+      "category": "library",
+      "version": "v0.37.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/net",
+      "category": "library",
+      "version": "v0.56.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/sync",
+      "category": "library",
+      "version": "v0.21.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/sys",
+      "category": "library",
+      "version": "v0.46.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/term",
+      "category": "library",
+      "version": "v0.44.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "golang.org/x/text",
+      "category": "library",
+      "version": "v0.38.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "gopkg.in/yaml.v3",
+      "category": "library",
+      "version": "v3.0.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "mvdan.cc/sh/v3",
+      "category": "library",
+      "version": "v3.13.1",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "@astrojs/sitemap",
+      "category": "library",
+      "version": "^3.7.3",
+      "dev": false,
+      "source": "site/package.json"
+    },
+    {
+      "name": "@fontsource-variable/jetbrains-mono",
+      "category": "library",
+      "version": "^5.1.0",
+      "dev": false,
+      "source": "site/package.json"
+    },
+    {
+      "name": "@fontsource-variable/outfit",
+      "category": "library",
+      "version": "^5.1.0",
+      "dev": false,
+      "source": "site/package.json"
+    },
+    {
+      "name": "Astro",
+      "category": "framework",
+      "version": "^6.4.8",
+      "dev": false,
+      "source": "site/package.json"
+    },
+    {
+      "name": "@cloudflare/workers-types",
+      "category": "library",
+      "version": "^4.20260601.0",
+      "dev": true,
+      "source": "workers/accounts/package.json"
+    },
+    {
+      "name": "Hono",
+      "category": "framework",
+      "version": "^4.6.14",
+      "dev": false,
+      "source": "workers/accounts/package.json"
+    },
+    {
+      "name": "TypeScript",
+      "category": "tool",
+      "version": "^5.8.0",
+      "dev": true,
+      "source": "workers/accounts/package.json"
+    },
+    {
+      "name": "Zod",
+      "category": "library",
+      "version": "^3.25.0",
+      "dev": false,
+      "source": "workers/accounts/package.json"
+    },
+    {
+      "name": "wrangler",
+      "category": "library",
+      "version": "^4.102.0",
+      "dev": true,
+      "source": "workers/accounts/package.json"
+    },
+    {
+      "name": "@cloudflare/workers-types",
+      "category": "library",
+      "version": "^4.20260601.0",
+      "dev": true,
+      "source": "workers/crash-report/package.json"
+    },
+    {
+      "name": "Hono",
+      "category": "framework",
+      "version": "^4.6.14",
+      "dev": false,
+      "source": "workers/crash-report/package.json"
+    },
+    {
+      "name": "TypeScript",
+      "category": "tool",
+      "version": "^5.8.0",
+      "dev": true,
+      "source": "workers/crash-report/package.json"
+    },
+    {
+      "name": "Zod",
+      "category": "library",
+      "version": "^3.25.0",
+      "dev": false,
+      "source": "workers/crash-report/package.json"
+    },
+    {
+      "name": "wrangler",
+      "category": "library",
+      "version": "^4.102.0",
+      "dev": true,
+      "source": "workers/crash-report/package.json"
+    },
+    {
+      "name": "@cloudflare/workers-types",
+      "category": "library",
+      "version": "^4.20260601.0",
+      "dev": true,
+      "source": "workers/forum/package.json"
+    },
+    {
+      "name": "Hono",
+      "category": "framework",
+      "version": "^4.6.14",
+      "dev": false,
+      "source": "workers/forum/package.json"
+    },
+    {
+      "name": "TypeScript",
+      "category": "tool",
+      "version": "^5.8.0",
+      "dev": true,
+      "source": "workers/forum/package.json"
+    },
+    {
+      "name": "Zod",
+      "category": "library",
+      "version": "^3.25.0",
+      "dev": false,
+      "source": "workers/forum/package.json"
+    },
+    {
+      "name": "wrangler",
+      "category": "library",
+      "version": "^4.102.0",
+      "dev": true,
+      "source": "workers/forum/package.json"
+    }
+  ]
+}

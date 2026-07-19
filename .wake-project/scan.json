@@ -1,0 +1,245 @@
+{
+  "schema_version": "3",
+  "scanned_at": "2026-07-19T18:19:57Z",
+  "duration_ms": 229,
+  "is_git_repo": true,
+  "git": {
+    "root": "/Users/weikejia/CODE/my-agent-group/projects/coder-agent/DeepSeek-Reasonix",
+    "branch": "wkj-cli",
+    "remotes": [
+      {
+        "name": "origin",
+        "url": "https://github.com/weikejia123/DeepSeek-Reasonix.git",
+        "host": "github.com",
+        "owner": "weikejia123",
+        "repo": "DeepSeek-Reasonix"
+      },
+      {
+        "name": "upstream",
+        "url": "https://github.com/esengine/DeepSeek-Reasonix.git",
+        "host": "github.com",
+        "owner": "esengine",
+        "repo": "DeepSeek-Reasonix"
+      }
+    ],
+    "head": "68ae2cba",
+    "path_prefix": ""
+  },
+  "detected_languages": [
+    {
+      "language": "Go",
+      "files": 910
+    },
+    {
+      "language": "TypeScript",
+      "files": 275
+    },
+    {
+      "language": "Markdown",
+      "files": 139
+    },
+    {
+      "language": "JSON",
+      "files": 61
+    },
+    {
+      "language": "YAML",
+      "files": 27
+    },
+    {
+      "language": "JavaScript",
+      "files": 17
+    },
+    {
+      "language": "Shell",
+      "files": 16
+    },
+    {
+      "language": "SQL",
+      "files": 12
+    },
+    {
+      "language": "TOML",
+      "files": 11
+    },
+    {
+      "language": "HTML",
+      "files": 5
+    },
+    {
+      "language": "CSS",
+      "files": 4
+    },
+    {
+      "language": "Python",
+      "files": 3
+    },
+    {
+      "language": "Objective-C",
+      "files": 1
+    },
+    {
+      "language": "Rust",
+      "files": 1
+    }
+  ],
+  "manifests": [
+    "Makefile",
+    "go.mod"
+  ],
+  "key_files": [
+    ".gitattributes",
+    ".gitignore",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "Makefile",
+    "README-WAKE.md",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "key_dirs": [
+    ".github",
+    "docs",
+    "scripts"
+  ],
+  "manifests_detail": [
+    {
+      "path": "desktop/frontend/package.json",
+      "kind": "package.json",
+      "name": "reasonix-desktop-frontend",
+      "version": "0.0.0"
+    },
+    {
+      "path": "desktop/go.mod",
+      "kind": "go.mod",
+      "name": "reasonix/desktop",
+      "version": null
+    },
+    {
+      "path": "go.mod",
+      "kind": "go.mod",
+      "name": "reasonix",
+      "version": null
+    },
+    {
+      "path": "npm/reasonix/package.json",
+      "kind": "package.json",
+      "name": "reasonix",
+      "version": "0.0.0"
+    },
+    {
+      "path": "site/package.json",
+      "kind": "package.json",
+      "name": "reasonix-site",
+      "version": null
+    },
+    {
+      "path": "workers/accounts/package.json",
+      "kind": "package.json",
+      "name": "reasonix-accounts",
+      "version": null
+    },
+    {
+      "path": "workers/crash-report/package.json",
+      "kind": "package.json",
+      "name": "reasonix-crash-report",
+      "version": null
+    },
+    {
+      "path": "workers/forum/package.json",
+      "kind": "package.json",
+      "name": "reasonix-forum",
+      "version": null
+    }
+  ],
+  "package_managers": [],
+  "frontends": [
+    {
+      "kind": "web",
+      "path": "desktop/frontend",
+      "evidence": [
+        "config: vite.config.ts",
+        "dependency: react",
+        "file: index.html"
+      ]
+    },
+    {
+      "kind": "cli",
+      "path": "npm/reasonix",
+      "evidence": [
+        "package.json: bin field"
+      ]
+    },
+    {
+      "kind": "web",
+      "path": "site",
+      "evidence": [
+        "config: astro.config.mjs",
+        "dependency: astro"
+      ]
+    }
+  ],
+  "backends": [
+    {
+      "name": "desktop",
+      "path": "desktop",
+      "framework": "Echo",
+      "evidence": [
+        "dependency: github.com/labstack/echo/v4"
+      ]
+    },
+    {
+      "name": "reasonix-accounts",
+      "path": "workers/accounts",
+      "framework": "Hono",
+      "evidence": [
+        "dependency: hono"
+      ]
+    },
+    {
+      "name": "reasonix-crash-report",
+      "path": "workers/crash-report",
+      "framework": "Hono",
+      "evidence": [
+        "dependency: hono"
+      ]
+    },
+    {
+      "name": "reasonix-forum",
+      "path": "workers/forum",
+      "framework": "Hono",
+      "evidence": [
+        "dependency: hono"
+      ]
+    }
+  ],
+  "timeline": {
+    "first_commit_at": "2026-05-29T17:53:10-07:00",
+    "last_commit_at": "2026-07-11T15:45:12+08:00",
+    "shallow_clone": false,
+    "last_file_modified_at": "2026-07-11T07:46:30Z",
+    "local_arrival_at": "2026-06-04T15:25:35Z",
+    "local_arrival_source": "git_dir_birthtime",
+    "local_arrival_approximate": true
+  },
+  "totals": {
+    "file_count": 1856,
+    "size_bytes": 388173118,
+    "size_mb": 370.19,
+    "scope": "excluding_ignored_dirs"
+  },
+  "ignored_dirs": [
+    ".git",
+    ".next",
+    ".venv",
+    ".wake-project",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+    "venv"
+  ]
+}
