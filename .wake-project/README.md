@@ -44,6 +44,7 @@
 - `git.head`：HEAD 短哈希
 - `git.path_prefix`：项目根相对 git 根的路径（内嵌项目场景；一致时为空字符串）
 - `git.remotes[]`：`{name, url, host, owner, repo}`；host/owner/repo 解析自 url，解析不出为 null
+- `git.has_commit_hooks`：是否存在 git commit 钩子（pre-commit 等）
 - `detected_languages[]`：`{language, files}` 按扩展名统计，按文件数降序
 - `manifests[]`：顶层存在的知名 manifest 文件名
 - `key_files[]` / `key_dirs[]`：顶层关键文件 / 目录

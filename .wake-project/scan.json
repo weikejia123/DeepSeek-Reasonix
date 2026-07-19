@@ -1,7 +1,7 @@
 {
   "schema_version": "3",
-  "scanned_at": "2026-07-19T18:57:05Z",
-  "duration_ms": 225,
+  "scanned_at": "2026-07-19T19:31:17Z",
+  "duration_ms": 234,
   "is_git_repo": true,
   "git": {
     "root": "/Users/weikejia/CODE/my-agent-group/projects/coder-agent/DeepSeek-Reasonix",
@@ -22,8 +22,9 @@
         "repo": "DeepSeek-Reasonix"
       }
     ],
-    "head": "0784178f",
-    "path_prefix": ""
+    "head": "58143bfb",
+    "path_prefix": "",
+    "has_commit_hooks": false
   },
   "detected_languages": [
     {
@@ -216,7 +217,7 @@
   ],
   "timeline": {
     "first_commit_at": "2026-05-29T17:53:10-07:00",
-    "last_commit_at": "2026-07-20T02:45:01+08:00",
+    "last_commit_at": "2026-07-20T02:57:06+08:00",
     "shallow_clone": false,
     "last_file_modified_at": "2026-07-11T07:46:30Z",
     "local_arrival_at": "2026-06-04T15:25:35Z",
