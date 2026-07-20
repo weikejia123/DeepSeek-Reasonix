@@ -2,7 +2,7 @@
 
 > 本文件由 wake-project 程序自动生成，内容随 schema 版本固化，在所有项目中一致。
 > 请勿手工修改（scan 会用程序内置版本覆盖）。
-> 当前 schema_version: 5
+> 当前 schema_version: 6
 
 ## 目录用途
 
@@ -45,6 +45,8 @@
 - `git.path_prefix`：项目根相对 git 根的路径（内嵌项目场景；一致时为空字符串）
 - `git.remotes[]`：`{name, url, host, owner, repo}`；host/owner/repo 解析自 url，解析不出为 null
 - `git.has_commit_hooks`：是否存在 git commit 钩子（pre-commit 等）
+- `git.has_upstream`：当前分支是否配置了 upstream（false 时 ahead/behind 为 null）
+- `git.is_detached_head`：HEAD 是否处于 detached 状态（true 时 branch 为 null）
 - `git.dirty_file_count`：工作区已修改/暂存文件数（不含 untracked）
 - `git.has_untracked`：是否存在未跟踪文件
 - `git.ahead_count`：领先 upstream 的 commit 数（无 upstream 时为 null）
@@ -70,6 +72,13 @@
 - `ignored_dirs[]`：本次扫描实际生效的目录忽略集（审计用，随项目配置文件而变化）
 - `manifest_parse_errors[]`：存在但解析失败的 manifest 文件相对路径（如 `packages/broken/package.json`）
 - `nested_repos[]`：含独立 `.git` 的子目录相对路径（扫描时跳过，不纳入语言/文件统计）
+- `warnings[]`：扫描质量警告 `{code, severity, message}`
+  - `code`：稳定的 snake_case 短代码（如 `manifest_parse_failed`、`shallow_clone`）
+  - `severity` ∈ `info` / `warning`
+  - 无警告时为 `[]`
+- `scan_completeness`：扫描完整性评估 `{level, reasons}`
+  - `level` ∈ `full` / `partial`
+  - `reasons`：partial 时的稳定原因字符串（如 `manifest_parse_errors`、`shallow_clone`）
 
 ## tech-stack.json
 
@@ -101,6 +110,8 @@
 - `branch` / `head`：当时的 git 状态
 - `languages` / `deps`：当次扫描的各项计数
 - `files`：当次扫描的文件数估算（口径同 scan.json 的 totals）
+- `warning_count`：当次扫描的警告数（= scan.json.warnings.length）
+- `completeness`：`full` 或 `partial`（= scan.json.scan_completeness.level）
 
 scan.json 永远只是"最新一次"的快照；历史变化（一天多次扫描、耗时趋势）以本日志为准。
 
