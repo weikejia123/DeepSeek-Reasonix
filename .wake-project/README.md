@@ -2,7 +2,7 @@
 
 > 本文件由 wake-project 程序自动生成，内容随 schema 版本固化，在所有项目中一致。
 > 请勿手工修改（scan 会用程序内置版本覆盖）。
-> 当前 schema_version: 3
+> 当前 schema_version: 5
 
 ## 目录用途
 
@@ -45,27 +45,31 @@
 - `git.path_prefix`：项目根相对 git 根的路径（内嵌项目场景；一致时为空字符串）
 - `git.remotes[]`：`{name, url, host, owner, repo}`；host/owner/repo 解析自 url，解析不出为 null
 - `git.has_commit_hooks`：是否存在 git commit 钩子（pre-commit 等）
-- `detected_languages[]`：`{language, files}` 按扩展名统计，按文件数降序
+- `git.dirty_file_count`：工作区已修改/暂存文件数（不含 untracked）
+- `git.has_untracked`：是否存在未跟踪文件
+- `git.ahead_count`：领先 upstream 的 commit 数（无 upstream 时为 null）
+- `git.behind_count`：落后 upstream 的 commit 数（无 upstream 时为 null）
+- `detected_languages[]`：`{language, files}` 按扩展名统计**编程语言**，按文件数降序
+  - 不含 Markdown、Shell、TOML、YAML、JSON、HTML、CSS 等非编程语言
 - `manifests[]`：顶层存在的知名 manifest 文件名
 - `key_files[]` / `key_dirs[]`：顶层关键文件 / 目录
 - `manifests_detail[]`：全部已解析 manifest（含 workspace 成员）：`{path, kind, name, version}`
 - `package_managers[]`：包管理器，由 `packageManager` 字段与 lockfile 判定
-- `frontends[]`：交互前端信号 `{kind, path, evidence[]}`
-  - `kind` ∈ `cli`（命令行）/ `tui`（终端 UI）/ `web`（网页）
-  - `evidence`：机器生成的规则证据（如 `package.json: bin field`、`dependency: next`）
-- `backends[]`：后端服务**候选** `{name, path, framework, evidence[]}`
-  - 证据来源：docker-compose services > 服务端框架依赖 > Next.js API routes
-  - 是候选而非结论；确认后的服务边界请写入 declared.json
 - `timeline.first_commit_at` / `last_commit_at`：按项目路径限定的 commit 作者时间
   - 内嵌项目不会拿到整个大仓库的历史；fork 时首个 commit 可能来自上游仓库
 - `timeline.shallow_clone`：浅克隆标记（true 时 first_commit_at 不可信）
 - `timeline.last_file_modified_at`：工作区文件 mtime 最大值（忽略目录除外）
+- `timeline.last_core_file_modified_at`：核心文件最后修改时间
+  - 基于 `git ls-files`（已跟踪文件），排除根目录直接文件、点目录（如 `.wake-project/`）
+  - 极大概率反映项目核心代码的最新变动
 - `timeline.local_arrival_at`：项目拉取到本地的**近似**时间
   - 来源见 `local_arrival_source`；`local_arrival_approximate` 恒为 true，勿当精确值
-- `totals`：物理规模**估算**（仅供参考）：`{file_count, size_bytes, size_mb, scope}`
+- `totals`：物理规模**估算**（仅供参考）：`{file_count, size_bytes, scope}`
   - `scope` 恒为 `excluding_ignored_dirs`：与语言统计同一遍历口径，不含 .git/node_modules/.venv 等
-  - `size_mb` = size_bytes / 1024²，保留两位小数；如需含依赖目录的原始占用请自行用 `du`
+  - 如需含依赖目录的原始占用请自行用 `du`
 - `ignored_dirs[]`：本次扫描实际生效的目录忽略集（审计用，随项目配置文件而变化）
+- `manifest_parse_errors[]`：存在但解析失败的 manifest 文件相对路径（如 `packages/broken/package.json`）
+- `nested_repos[]`：含独立 `.git` 的子目录相对路径（扫描时跳过，不纳入语言/文件统计）
 
 ## tech-stack.json
 
@@ -95,13 +99,13 @@
 
 - `ts`：扫描时间；`result`：`ok` 或 `skipped_not_git`（目录失去独立 .git 后被跳过，仅在日志已存在时追加）；`duration_ms`：耗时（毫秒）
 - `branch` / `head`：当时的 git 状态
-- `languages` / `deps` / `frontends` / `backends`：当次扫描的各项计数
-- `files` / `size_mb`：当次扫描的物理规模估算（口径同 scan.json 的 totals）
+- `languages` / `deps`：当次扫描的各项计数
+- `files`：当次扫描的文件数估算（口径同 scan.json 的 totals）
 
 scan.json 永远只是"最新一次"的快照；历史变化（一天多次扫描、耗时趋势）以本日志为准。
 
 ## 阅读注意事项
 
-1. scan.json / tech-stack.json 是**声明层事实**：依赖被声明 ≠ 运行时使用；后端是候选清单。
+1. scan.json / tech-stack.json 是**声明层事实**：依赖被声明 ≠ 运行时使用。
 2. 语义归类（项目是什么、服务边界、项目间关系）属于 declared.json / agent.json 的职责。
 3. 程序不会覆盖 declared.json / agent.json / runtime.json；其余文件（含本文件）可被 init/scan 安全重建。
