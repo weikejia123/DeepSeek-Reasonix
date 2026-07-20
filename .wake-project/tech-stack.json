@@ -1,6 +1,6 @@
 {
-  "schema_version": "3",
-  "scanned_at": "2026-07-19T19:58:46Z",
+  "schema_version": "4",
+  "scanned_at": "2026-07-20T04:28:04Z",
   "tech_stack": [
     {
       "name": "@gsap/react",

@@ -1,7 +1,7 @@
 {
-  "schema_version": "3",
-  "scanned_at": "2026-07-19T19:58:46Z",
-  "duration_ms": 235,
+  "schema_version": "4",
+  "scanned_at": "2026-07-20T04:28:04Z",
+  "duration_ms": 264,
   "is_git_repo": true,
   "git": {
     "root": "/Users/weikejia/CODE/my-agent-group/projects/coder-agent/DeepSeek-Reasonix",
@@ -22,9 +22,13 @@
         "repo": "DeepSeek-Reasonix"
       }
     ],
-    "head": "8d1d34ad",
+    "head": "50db35ba",
     "path_prefix": "",
-    "has_commit_hooks": false
+    "has_commit_hooks": false,
+    "dirty_file_count": 4,
+    "has_untracked": false,
+    "ahead_count": null,
+    "behind_count": null
   },
   "detected_languages": [
     {
@@ -36,40 +40,8 @@
       "files": 275
     },
     {
-      "language": "Markdown",
-      "files": 139
-    },
-    {
-      "language": "JSON",
-      "files": 61
-    },
-    {
-      "language": "YAML",
-      "files": 27
-    },
-    {
       "language": "JavaScript",
       "files": 17
-    },
-    {
-      "language": "Shell",
-      "files": 16
-    },
-    {
-      "language": "SQL",
-      "files": 12
-    },
-    {
-      "language": "TOML",
-      "files": 11
-    },
-    {
-      "language": "HTML",
-      "files": 5
-    },
-    {
-      "language": "CSS",
-      "files": 4
     },
     {
       "language": "Python",
@@ -155,69 +127,9 @@
     }
   ],
   "package_managers": [],
-  "frontends": [
-    {
-      "kind": "web",
-      "path": "desktop/frontend",
-      "evidence": [
-        "config: vite.config.ts",
-        "dependency: react",
-        "file: index.html"
-      ]
-    },
-    {
-      "kind": "cli",
-      "path": "npm/reasonix",
-      "evidence": [
-        "package.json: bin field"
-      ]
-    },
-    {
-      "kind": "web",
-      "path": "site",
-      "evidence": [
-        "config: astro.config.mjs",
-        "dependency: astro"
-      ]
-    }
-  ],
-  "backends": [
-    {
-      "name": "desktop",
-      "path": "desktop",
-      "framework": "Echo",
-      "evidence": [
-        "dependency: github.com/labstack/echo/v4"
-      ]
-    },
-    {
-      "name": "reasonix-accounts",
-      "path": "workers/accounts",
-      "framework": "Hono",
-      "evidence": [
-        "dependency: hono"
-      ]
-    },
-    {
-      "name": "reasonix-crash-report",
-      "path": "workers/crash-report",
-      "framework": "Hono",
-      "evidence": [
-        "dependency: hono"
-      ]
-    },
-    {
-      "name": "reasonix-forum",
-      "path": "workers/forum",
-      "framework": "Hono",
-      "evidence": [
-        "dependency: hono"
-      ]
-    }
-  ],
   "timeline": {
     "first_commit_at": "2026-05-29T17:53:10-07:00",
-    "last_commit_at": "2026-07-20T03:45:19+08:00",
+    "last_commit_at": "2026-07-20T03:58:47+08:00",
     "shallow_clone": false,
     "last_file_modified_at": "2026-07-11T07:46:30Z",
     "local_arrival_at": "2026-06-04T15:25:35Z",
@@ -227,7 +139,6 @@
   "totals": {
     "file_count": 1856,
     "size_bytes": 388173118,
-    "size_mb": 370.19,
     "scope": "excluding_ignored_dirs"
   },
   "ignored_dirs": [
@@ -242,5 +153,7 @@
     "target",
     "vendor",
     "venv"
-  ]
+  ],
+  "manifest_parse_errors": [],
+  "nested_repos": []
 }
