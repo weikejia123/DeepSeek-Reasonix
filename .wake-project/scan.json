@@ -1,7 +1,7 @@
 {
-  "schema_version": "6",
-  "scanned_at": "2026-07-20T13:15:48Z",
-  "duration_ms": 248,
+  "schema_version": "7",
+  "scanned_at": "2026-07-20T19:45:55Z",
+  "duration_ms": 284,
   "is_git_repo": true,
   "git": {
     "root": "/Users/weikejia/CODE/my-agent-group/projects/coder-agent/DeepSeek-Reasonix",
@@ -22,7 +22,7 @@
         "repo": "DeepSeek-Reasonix"
       }
     ],
-    "head": "b19400e1",
+    "head": "05ca661c",
     "path_prefix": "",
     "has_commit_hooks": false,
     "has_upstream": false,
@@ -30,7 +30,9 @@
     "dirty_file_count": 4,
     "has_untracked": false,
     "ahead_count": null,
-    "behind_count": null
+    "behind_count": null,
+    "latest_tag": "desktop-v1.17.10",
+    "submodules": []
   },
   "detected_languages": [
     {
@@ -131,7 +133,7 @@
   "package_managers": [],
   "timeline": {
     "first_commit_at": "2026-05-29T17:53:10-07:00",
-    "last_commit_at": "2026-07-20T20:45:46+08:00",
+    "last_commit_at": "2026-07-20T21:15:48+08:00",
     "shallow_clone": false,
     "last_file_modified_at": "2026-07-11T07:46:30Z",
     "last_core_file_modified_at": "2026-07-11T07:46:30Z",
@@ -159,6 +161,7 @@
   ],
   "manifest_parse_errors": [],
   "nested_repos": [],
+  "has_ci_config": true,
   "warnings": [],
   "scan_completeness": {
     "level": "full",
