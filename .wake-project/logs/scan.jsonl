@@ -1,13 +1,1 @@
-{"ts":"2026-07-19T18:13:18Z","result":"ok","duration_ms":225,"branch":"wkj-cli","head":"68ae2cba","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T18:19:57Z","result":"ok","duration_ms":229,"branch":"wkj-cli","head":"68ae2cba","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T18:29:56Z","result":"ok","duration_ms":230,"branch":"wkj-cli","head":"86e594ec","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T18:37:22Z","result":"ok","duration_ms":236,"branch":"wkj-cli","head":"86e594ec","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T18:45:01Z","result":"ok","duration_ms":238,"branch":"wkj-cli","head":"86e594ec","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T18:57:05Z","result":"ok","duration_ms":225,"branch":"wkj-cli","head":"0784178f","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T19:31:17Z","result":"ok","duration_ms":234,"branch":"wkj-cli","head":"58143bfb","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T19:45:18Z","result":"ok","duration_ms":238,"branch":"wkj-cli","head":"6b38638f","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-19T19:58:46Z","result":"ok","duration_ms":235,"branch":"wkj-cli","head":"8d1d34ad","languages":14,"deps":149,"frontends":3,"backends":4,"files":1856,"size_mb":370.19}
-{"ts":"2026-07-20T04:28:04Z","result":"ok","duration_ms":264,"branch":"wkj-cli","head":"50db35ba","languages":6,"deps":149,"files":1856}
-{"ts":"2026-07-20T12:45:45Z","result":"ok","duration_ms":291,"branch":"wkj-cli","head":"16d28321","languages":6,"deps":149,"files":1856}
-{"ts":"2026-07-20T13:15:48Z","result":"ok","duration_ms":248,"branch":"wkj-cli","head":"b19400e1","languages":6,"deps":149,"files":1856,"warning_count":0,"completeness":"full"}
-{"ts":"2026-07-20T19:45:55Z","result":"ok","duration_ms":284,"branch":"wkj-cli","head":"05ca661c","languages":6,"deps":149,"files":1856,"warning_count":0,"completeness":"full"}
+{"ts":"2026-07-21T10:56:15Z","project_id":"019f8451-b2a7-7690-99e7-9bd9a7945ccb","scan_id":"019f8451-b567-7743-92d9-b28d5299b6b4","result":"ok","duration_ms":305,"branch":"wkj-cli","head":"6a66ffd5","languages":6,"deps":149,"files":1856,"warning_count":0,"completeness":"full"}

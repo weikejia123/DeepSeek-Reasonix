@@ -1,0 +1,60 @@
+{
+  "identity": {
+    "type": "cli_tool",
+    "confidence": 0.97,
+    "rationale": "核心入口为cmd/reasonix的Go CLI程序，提供reasonix run/setup等命令行的AI编码代理工具",
+    "one_liner": "DeepSeek原生的终端AI编码代理，配置文件驱动的可插拔代码智能体系统",
+    "purpose_summary": "Reasonix是一个以DeepSeek为核心的AI编码代理CLI工具，通过reasonix.toml配置文件管理模型提供商、工具和插件。它支持多模型协作（planner + executor）、MCP兼容的插件系统（工具通过stdio JSON-RPC通信）以及树 sitter 驱动的AST分析。安装方式：npm i -g reasonix 或 brew install esengine/reasonix/reasonix，主要命令包括 setup（配置向导）、run <prompt>（运行编码任务）、以及 /init（生成项目记忆文件AGENTS.md）等斜杠命令。"
+  },
+  "domains": [
+    "AI代理",
+    "代码分析",
+    "终端工具",
+    "LLM集成",
+    "开发辅助"
+  ],
+  "tech_summary": {
+    "natural": "Go 1.25编写的CLI工具主程序，使用bubbletea构建TUI界面、Echo提供Web服务；配套有基于React+Wails的桌面端应用（Electron替代方案）、基于Hono+Cloudflare Workers的服务端API（账号/崩溃报告），以及Astro文档站",
+    "primary_language": "go",
+    "runtime": "Go 1.25 (CGO_ENABLED=0单二进制分发)",
+    "framework": "bubbletea",
+    "key_dependencies": [
+      "charm.land/bubbletea/v2",
+      "github.com/tree-sitter/go-tree-sitter",
+      "github.com/yuin/goldmark",
+      "mvdan.cc/sh/v3",
+      "github.com/larksuite/oapi-sdk-go/v3"
+    ]
+  },
+  "critical_paths": [
+    {
+      "path": "cmd/reasonix/main.go",
+      "role": "CLIS入口点，负责命令行参数解析、子命令分发和启动流程编排",
+      "stability": "high"
+    },
+    {
+      "path": "internal/agent/",
+      "role": "AI编码代理核心逻辑，实现与LLM的交互循环、工具调用和工作流调度机制",
+      "stability": "high"
+    },
+    {
+      "path": "internal/config/",
+      "role": "配置解析和优先级管理（flag > toml > 用户级配置 > 默认值），决定运行时的所有行为参数",
+      "stability": "high"
+    },
+    {
+      "path": "internal/plugin/",
+      "role": "插件系统核心，管理MCP兼容的外部工具注册、子进程通信和stdio JSON-RPC协议",
+      "stability": "moderate"
+    },
+    {
+      "path": "internal/provider/",
+      "role": "LLM提供商抽象层，统一不同OpenAI兼容接口的API调用契约并处理prefix cache优化",
+      "stability": "high"
+    }
+  ],
+  "_meta": {
+    "schema_version": 1,
+    "analyzed_at": "2026-07-21T06:24:42+0800"
+  }
+}

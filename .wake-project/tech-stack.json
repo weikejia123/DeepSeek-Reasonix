@@ -1,6 +1,8 @@
 {
-  "schema_version": "7",
-  "scanned_at": "2026-07-20T19:45:55Z",
+  "schema_version": "8",
+  "project_id": "019f8451-b2a7-7690-99e7-9bd9a7945ccb",
+  "scan_id": "019f8451-b567-7743-92d9-b28d5299b6b4",
+  "scanned_at": "2026-07-21T10:56:15Z",
   "tech_stack": [
     {
       "name": "@gsap/react",
