@@ -8,11 +8,21 @@ export type QuestionAnchor = {
   isALoop?: boolean;
   isMessageFromTab?: boolean;
   checkpointTurn?: number;
+  userItem?: Item;
+  assistantPreview?: string;
+  toolCount?: number;
+  startIdx?: number;
+  endIdx?: number;
+}
+
+export interface TurnGroup {
   userItem: Item;
   assistantPreview: string;
   toolCount: number;
   startIdx: number;
   endIdx: number;
+  turn: number;
+  items: Item[];
 }
 
 export interface StepGroup {
@@ -121,6 +131,8 @@ export function buildTurnGroups(items: Item[]): TurnGroup[] {
         toolCount: 0,
         startIdx: i,
         endIdx: items.length,
+        turn: groups.length,
+        items: [],
       });
     } else if (start >= 0 && groups.length > 0) {
       const group = groups[groups.length - 1];

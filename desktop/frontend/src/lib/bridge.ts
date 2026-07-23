@@ -505,6 +505,7 @@ export interface AppBindings {
   WorkbenchRemoteRequest(method: string, paramsJSON: string): Promise<string>;
   WorkbenchResolveProviderTrust(accept: boolean): Promise<void>;
   WorkbenchPendingProviderTrust(): Promise<ProviderTrustPrompt | null>;
+  ListWorkspaceFiles(): Promise<string[]>;
 }
 
 // Compile-time drift check. Exclude<A, B> extracts keys in A that are missing
@@ -3449,21 +3450,7 @@ function makeMockApp(): AppBindings {
     async GitCheckout(_branch: string) {
       console.info("mock GitCheckout", _branch);
     },
-    async ListWorkspaceFiles() {
-      return [
-        "README.md",
-        "go.mod",
-        "desktop/app.go",
-        "desktop/frontend/src/App.tsx",
-        "desktop/frontend/src/components/Markdown.tsx",
-        "desktop/frontend/src/components/Message.tsx",
-        "desktop/frontend/src/components/Transcript.tsx",
-        "desktop/frontend/src/lib/bridge.ts",
-        "internal/control/controller.go",
-        "internal/control/input.go",
-        "internal/agent/coordinator.go",
-      ];
-    },
+
     async WorkspaceGitHistory(_tabID: string, path: string) {
       return [
         { hash: "abcdef123456", author: "Mock Author", date: new Date().toISOString(), message: "Mock commit message for " + path },
@@ -4733,6 +4720,9 @@ function makeMockApp(): AppBindings {
     async WorkbenchResolveProviderTrust() {},
     async WorkbenchPendingProviderTrust() {
       return null;
+    },
+    async ListWorkspaceFiles() {
+      return [];
     },
   };
 }
