@@ -1067,20 +1067,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		recentKeep:            opts.RecentKeep,
 		archiveDir:            opts.ArchiveDir,
 		keepPolicy:            opts.KeepPolicy,
-		planModeAllowedTools:     append([]string(nil), opts.PlanModeAllowedTools...),
-		planModeReadOnlyCommands: append([]string(nil), opts.PlanModeReadOnlyCommands...),
 		subagentDepth:            subagentDepth,
 		maxSubagentDepth:         maxSubagentDepth,
-		memoryCompiler:           opts.MemoryCompiler,
-		memoryCompilerVerbosity:  normalizeMemoryCompilerVerbosity(opts.MemoryCompilerVerbosity),
-	}
-	if opts.UseMemoryCompilerLLMClassification && prov != nil {
-		// Use LLM classifier (Haiku)
-		fallback := newHeuristicClassifier()
-		a.classifier = newLLMClassifier(prov, fallback)
-	} else {
-		a.classifier = newHeuristicClassifier()
-	}
 	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)

@@ -1804,8 +1804,8 @@ func (c *Controller) Approve(id string, allow, session, persist bool) {
 // the controller is built, so they are available on the next turn without
 // rebuilding the entire controller.
 func (c *Controller) AddTool(t tool.Tool) {
-	if c.reg != nil && t != nil {
-		c.reg.Add(t)
+	if reg := c.mcp.registry(); reg != nil && t != nil {
+		reg.Add(t)
 	}
 }
 
@@ -1813,7 +1813,13 @@ func (c *Controller) AddTool(t tool.Tool) {
 // is used by frontends (e.g. desktop) to surface frontend-specific slash verbs in
 // the composer's slash menu.
 func (c *Controller) AddCommand(cmd command.Command) {
-	c.commands = append(c.commands, cmd)
+	existing := c.commands.Load()
+	var cmds []command.Command
+	if existing != nil {
+		cmds = *existing
+	}
+	cmds = append(cmds, cmd)
+	c.commands.Store(&cmds)
 }
 
 // AddSlashHandler registers a slash verb that executes immediately instead of
@@ -6049,25 +6055,6 @@ func (c *Controller) execLoopScript(ctx context.Context, scriptPath string) stri
 		return ""
 	}
 	return stdout.String()
-}
-
-func (c *Controller) emitMCPReadOnlyTrustResult(r MCPReadOnlyTrustResult) {
-	server := strings.TrimSpace(r.Server)
-	toolName := strings.TrimSpace(r.Tool)
-	if r.Err != nil {
-		c.sink.Emit(event.Event{
-			Kind:  event.Notice,
-			Level: event.LevelWarn,
-			Text:  fmt.Sprintf(i18n.M.MCPReadOnlyTrustFailedFmt, server, toolName, r.Err),
-		})
-		return
-	}
-	switch {
-	case r.Saved:
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.MCPReadOnlyTrustSavedFmt, r.Path, server, toolName)})
-	case strings.TrimSpace(r.CoveredBy) != "":
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.MCPReadOnlyTrustAlreadyFmt, r.Path, server, r.CoveredBy)})
-	}
 }
 
 func (c *Controller) emitPlanModeReadOnlyCommandTrustResult(r PlanModeReadOnlyCommandTrustResult) {

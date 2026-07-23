@@ -1516,7 +1516,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Gate:        headlessGate,
 		Hooks:       hookRunner,
 		Jobs:        jm,
-		DisableProjectChecks:               cfg.Agent.DisableProjectChecks,
 		// Parent write reservation at the executor entry covers all writers
 		// (including late Economy/MCP adds) without wrapping tool schemas.
 		WriteScheduler:           subagentScheduler,
@@ -1535,21 +1534,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ArchiveDir:               config.ArchiveDir(),
 		KeepPolicy:               keepPolicy,
 		ReasoningLanguage:        cfg.ReasoningLanguage(),
-		PlanModeAllowedTools:               cfg.Agent.PlanModeAllowedTools,
-		PlanModeReadOnlyCommands:           cfg.Agent.PlanModeReadOnlyCommands,
-		PlanModeDraftCommands:              cfg.Agent.PlanModeDraftCommands,
-		SubagentDepth:                      0,
-		MaxSubagentDepth:                   maxSubagentDepth,
-		SilentMode:    opts.SilentMode,
-		Reporter:      opts.Reporter,
-		ToolRegistry:  tc,
-		OutputMode:    opts.OutputMode,
-		OutputPath:    opts.OutputPath,
-		Classifier:    classifier,
-		EvidenceTracker:                   evidenceTracker,
-		MemoryCompiler:                    memCompiler,
-		MemoryCompilerVerbosity:           cfg.MemoryCompilerVerbosity(),
-		UseMemoryCompilerLLMClassification: strings.TrimSpace(os.Getenv("REASONIX_MEMORY_COMPILER_LLM_CLASSIFICATION")) == "true",
+		PlanModeReadOnlyCommands: cfg.Agent.PlanModeReadOnlyCommands,
+		SubagentDepth:            0,
+		MaxSubagentDepth:         maxSubagentDepth,
 	}, sink)
 
 	var runner agent.Runner = executor

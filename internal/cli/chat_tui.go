@@ -1755,13 +1755,6 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.copyNoticeText = ""
 			}
 
-		case elapsedTickMsg:
-		if m.state == tuiRunning {
-			m.elapsed = int(time.Since(m.runStart).Seconds())
-			m.tickToolRunning()
-			cmds = append(cmds, elapsedTick())
-		}
-
 	case spinner.TickMsg:
 		if m.state == tuiRunning {
 			var cmd tea.Cmd
