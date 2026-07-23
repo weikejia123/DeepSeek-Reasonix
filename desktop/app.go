@@ -5870,6 +5870,22 @@ type Meta struct {
 	Ready             bool                     `json:"ready"`
 	StartupErr        string                   `json:"startupErr,omitempty"`
 	StartupTracker    *repair.StartupTracker   `json:"-"`
+	EventChannel      string                   `json:"eventChannel"`
+	Cwd               string                   `json:"cwd"`
+	WorkspaceRoot     string                   `json:"workspaceRoot,omitempty"`
+	WorkspaceName     string                   `json:"workspaceName,omitempty"`
+	WorkspacePath     string                   `json:"workspacePath,omitempty"`
+	GitBranch         string                   `json:"gitBranch,omitempty"`
+	ImageInputEnabled bool                     `json:"imageInputEnabled"`
+	AutoApproveTools  bool                     `json:"autoApproveTools"`
+	Bypass            bool                     `json:"bypass"`
+	CollaborationMode string                   `json:"collaborationMode"`
+	ToolApprovalMode  string                   `json:"toolApprovalMode"`
+	TokenMode         string                   `json:"tokenMode"`
+	Goal              string                   `json:"goal,omitempty"`
+	GoalStatus        string                   `json:"goalStatus,omitempty"`
+	AutoResearch      *AutoResearchCompactView `json:"autoResearch,omitempty"`
+	CanonicalTodos    *[]evidence.TodoItem     `json:"canonicalTodos,omitempty"`
 	LoopActive        bool                     `json:"loopActive,omitempty"`
 }
 
@@ -5878,6 +5894,61 @@ type Meta struct {
 // subscribes to.
 func (a *App) Meta() Meta {
 	return a.MetaForTab("")
+}
+
+
+type AutoResearchCompactView struct {
+	TaskID        string `json:"taskId"`
+	Status        string `json:"status"`
+	Iteration     int    `json:"iteration"`
+	PivotRequired bool   `json:"pivotRequired"`
+	StaleCount    int    `json:"staleCount"`
+}
+
+type AutoResearchCriterionView struct {
+	ID            string `json:"id"`
+	Description   string `json:"description"`
+	Required      bool   `json:"required"`
+	EvidenceCount int    `json:"evidenceCount"`
+	Status        string `json:"status"`
+}
+
+type AutoResearchStatusView struct {
+	TaskID             string                      `json:"taskId"`
+	Goal               string                      `json:"goal"`
+	Status             string                      `json:"status"`
+	Iteration          int                         `json:"iteration"`
+	CurrentDirection   string                      `json:"currentDirection"`
+	StaleCount         int                         `json:"staleCount"`
+	PivotCount         int                         `json:"pivotCount"`
+	PivotRequired      bool                        `json:"pivotRequired"`
+	LastHeartbeatAt    string                      `json:"lastHeartbeatAt"`
+	FindingCount       int                         `json:"findingCount"`
+	OpenCriteria       []AutoResearchCriterionView `json:"openCriteria"`
+	Blocker            string                      `json:"blocker"`
+	TaskPath           string                      `json:"taskPath"`
+	NextRequiredAction string                      `json:"nextRequiredAction"`
+}
+
+type AutoResearchFindingView struct {
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Summary   string   `json:"summary"`
+	Source    string   `json:"source"`
+	Command   string   `json:"command,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+	Accepted  bool     `json:"accepted"`
+	CreatedAt string   `json:"createdAt"`
+}
+
+type AutoResearchEvidenceView struct {
+	ID       string   `json:"id"`
+	Kind     string   `json:"kind"`
+	Summary  string   `json:"summary"`
+	Source   string   `json:"source"`
+	Command  string   `json:"command,omitempty"`
+	Paths    []string `json:"paths,omitempty"`
+	Accepted bool     `json:"accepted"`
 }
 
 func (a *App) imageInputEnabledForTab(tabID string) bool {
@@ -6258,6 +6329,7 @@ func (a *App) LoopActiveForTab(tabID string) bool {
 		return false
 	}
 	return tab.Ctrl.LoopActive()
+}
 
 // ResumeGoalForTab re-enters a blocked or stopped Goal while preserving its
 // delivery scope and persisted verification checkpoint.
