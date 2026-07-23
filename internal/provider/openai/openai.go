@@ -190,6 +190,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		minimax:      minimax,
 		zhipu:        zhipu,
 		longcat:      longcat,
+		mimo:         IsMiMo(cfg.BaseURL),
 		thinkingType: thinkingType,
 		vision:       vision,
 		visionDetail: visionDetail,
@@ -224,6 +225,7 @@ type client struct {
 	minimax      bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
 	zhipu        bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
 	longcat      bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
+	mimo         bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
 	thinkingType string        // explicit `thinking` config override (enabled|disabled); "" = no override
 	vision       bool          // model accepts image input — embed attached images as image_url parts
 	visionDetail string        // image_url detail hint (low|high); "" = auto/omit
@@ -387,7 +389,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	}
 	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
 	if err != nil {
-		return nil, err
+		return nil, provider.AnnotateToolSchemaError(err, req.Tools)
 	}
 	c.authed.Store(true)
 
@@ -519,6 +521,9 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		if len(parameters) == 0 {
 			parameters = provider.CanonicalizeSchema(nil)
 		}
+		if c.mimo {
+			parameters = provider.NormalizeLegacyTupleItemsForDraft202012(parameters)
+		}
 		tools = append(tools, chatTool{
 			Type:     "function",
 			Function: chatFunction{Name: t.Name, Description: t.Description, Parameters: parameters},
@@ -641,6 +646,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 
 	acc := map[int]*provider.ToolCall{}
 	started := map[int]bool{}
+	argBucket := map[int]int{}
 	var order []int
 	var lastFinishReason string
 	var sawDone bool
@@ -734,6 +740,18 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				emitted = true
 				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}}) {
 					return emitted, ctx.Err()
+				}
+			}
+			// Progress ticks while a large argument payload streams (a 30KB
+			// write_file body can take a minute-plus): one chunk per 2KB bucket
+			// so the consumer can show liveness without per-delta spam.
+			if started[tc.Index] {
+				if bucket := len(cur.Arguments) / 2048; bucket > argBucket[tc.Index] {
+					argBucket[tc.Index] = bucket
+					emitted = true
+					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallArgsDelta, ToolCall: &provider.ToolCall{ID: cur.ID, Name: cur.Name}, ArgChars: len(cur.Arguments)}) {
+						return emitted, ctx.Err()
+					}
 				}
 			}
 		}

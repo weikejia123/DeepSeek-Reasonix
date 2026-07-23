@@ -50,6 +50,11 @@ node_modules/
 !/.reasonix/docs/
 !/.reasonix/docs/*.md
 
+# Stray Reasonix state written under a package dir by a test whose RealPath
+# resolves to CWD (e.g. remote bootstrap EnsureServe). Never commit these.
+internal/**/.reasonix/
+desktop/**/.reasonix/
+
 # CodeGraph per-project index (rebuilt locally; never committed)
 .codegraph/
 
@@ -70,3 +75,7 @@ desktop/wails.json
 
 # Local scratch
 temp/
+
+# Official theme art intermediate outputs / caches
+scripts/official-theme-art/out/
+scripts/official-theme-art/__pycache__/
