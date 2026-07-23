@@ -5870,6 +5870,7 @@ type Meta struct {
 	Ready             bool                     `json:"ready"`
 	StartupErr        string                   `json:"startupErr,omitempty"`
 	StartupTracker    *repair.StartupTracker   `json:"-"`
+	LoopActive        bool                     `json:"loopActive,omitempty"`
 }
 
 // Meta reports the model label, readiness, any startup error, the working
