@@ -205,6 +205,11 @@ launch_desktop() {
     log_info "执行: wails dev (在 $DESKTOP_DIR)"
     echo ""
 
+    # wails dev 开发模式下 Go 进程会因文件变更频繁重启，
+    # 每次重启都会在 startup-state.json 留下未完成状态。
+    # 清除该文件可避免 crash 计数器累积到阈值后弹出安全模式对话框。
+    rm -f "$HOME/.reasonix/repair/startup-state.json"
+
     # wails dev 会阻塞，所以用 exec 替换当前进程
     exec wails dev
 }
