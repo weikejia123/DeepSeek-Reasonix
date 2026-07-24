@@ -157,6 +157,13 @@ do_install() {
   cp -f "$src" "$target"
   chmod +x "$target"
 
+  # 移除旧的 /usr/local/bin/ 版本（如果有）避免 PATH 优先级冲突
+  if [ -f "/usr/local/bin/reasonix-go" ] && [ ! -w "/usr/local/bin" ]; then
+    echo "  → 检测到旧版 /usr/local/bin/reasonix-go，尝试移除..."
+    sudo rm -f /usr/local/bin/reasonix-go 2>/dev/null || \
+      echo "  → 无法移除（需要 sudo），请手动执行: sudo rm /usr/local/bin/reasonix-go"
+  fi
+
   log_info "已安装: $target"
   log_info "大小: $(ls -lh "$target" | awk '{print $5}')"
 }
@@ -167,14 +174,18 @@ verify_deployment() {
 
   local errors=0
 
-  if ! command -v reasonix-go &>/dev/null; then
+  # 优先检查 ~/.local/bin 的本地安装版本
+  local local_bin="$HOME/.local/bin/reasonix-go"
+  local cmd_path="$local_bin"
+  if [ -x "$local_bin" ]; then
+    log_info "reasonix-go ($local_bin) ✅"
+  elif command -v reasonix-go &>/dev/null; then
+    cmd_path="$(which reasonix-go)"
+    log_warn "reasonix-go 在 $cmd_path（不是 ~/.local/bin，可能用了旧版）"
+  else
     log_error "reasonix-go 命令不存在！"
     return 1
   fi
-  log_info "reasonix-go 命令存在 ✅"
-
-  local cmd_path
-  cmd_path="$(which reasonix-go 2>/dev/null || true)"
   log_info "命令路径: $cmd_path"
 
   # 二进制 stat 对比
