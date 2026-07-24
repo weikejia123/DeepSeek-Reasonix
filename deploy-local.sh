@@ -141,9 +141,9 @@ do_build() {
   write_marker
 }
 
-# ─── 安装到 PATH ───
+# ─── 安装到 ~/.local/bin（无需 sudo）───
 do_install() {
-  local target="$1"
+  local target="$HOME/.local/bin/reasonix-go"
   local src="bin/reasonix-go"
 
   if [ ! -f "$src" ]; then
@@ -153,41 +153,12 @@ do_install() {
 
   log_step "安装 reasonix-go → $target"
 
-  local target_dir
-  target_dir="$(dirname "$target")"
-  mkdir -p "$target_dir"
-
-  if [ ! -w "$target_dir" ]; then
-    sudo -n cp -f "$src" "$target" 2>/dev/null || sudo cp -f "$src" "$target"
-    sudo -n chmod +x "$target" 2>/dev/null || sudo chmod +x "$target"
-    log_info "已安装（sudo）: $target"
-  else
-    cp -f "$src" "$target"
-    chmod +x "$target"
-    log_info "已安装: $target"
-  fi
-
-  log_info "大小: $(ls -lh "$target" | awk '{print $5}')"
-}
-
-# ─── 确定安装目标 ───
-resolve_target() {
-  local custom="${1:-}"
-
-  if [ -n "$custom" ] && [ "$custom" != "build" ] && [ "$custom" != "verify" ] && [ "$custom" != "help" ]; then
-    echo "$custom"
-    return
-  fi
-
-  if which reasonix-go &>/dev/null; then
-    # 总是使用检测到的路径，do_install 会自动处理 sudo
-    which reasonix-go
-    return
-  fi
-
-  local fallback="$HOME/.local/bin/reasonix-go"
   mkdir -p "$HOME/.local/bin"
-  echo "$fallback"
+  cp -f "$src" "$target"
+  chmod +x "$target"
+
+  log_info "已安装: $target"
+  log_info "大小: $(ls -lh "$target" | awk '{print $5}')"
 }
 
 # ─── 验证部署 ───
@@ -279,9 +250,7 @@ main() {
     full)
       check_prereqs
       do_build
-      local target
-      target="$(resolve_target "${2:-}")"
-      do_install "$target"
+      do_install
       verify_deployment
       ;;
     build)
