@@ -180,15 +180,20 @@ resolve_target() {
   fi
 
   if which reasonix-go &>/dev/null; then
-    which reasonix-go
-    return
+    local existing
+    existing="$(which reasonix-go)"
+    local existing_dir
+    existing_dir="$(dirname "$existing")"
+    if [ -w "$existing_dir" ]; then
+      echo "$existing"
+      return
+    fi
+    log_warn "已有路径 $existing_dir 不可写，尝试 ~/.local/bin"
   fi
 
-  if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
-    echo "/usr/local/bin/reasonix-go"
-  else
-    echo "$HOME/.local/bin/reasonix-go"
-  fi
+  local fallback="$HOME/.local/bin/reasonix-go"
+  mkdir -p "$HOME/.local/bin"
+  echo "$fallback"
 }
 
 # ─── 验证部署 ───
