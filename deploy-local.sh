@@ -221,9 +221,9 @@ verify_deployment() {
   fi
 
   # 运行版本（Go 二进制内嵌了 git SHA）
-  log_info "执行 reasonix-go version..."
+  log_info "执行 version..."
   local version_output
-  version_output="$(reasonix-go version 2>&1 || reasonix-go --version 2>&1 || echo 'N/A')"
+  version_output="$("$cmd_path" version 2>&1 || "$cmd_path" --version 2>&1 || echo 'N/A')"
   log_info "版本输出: $version_output"
 
   # SHA 验证
@@ -247,7 +247,7 @@ verify_deployment() {
   else
     echo -e "${YELLOW}⚠  部署完成但有 $errors 个警告${NC}"
   fi
-  echo "  命令:  $(which reasonix-go)"
+  echo "  命令:  $cmd_path (which prefers: $(which reasonix-go 2>/dev/null || echo 'N/A'))"
   echo "  版本:  $version_output"
   echo "  分支:  $(git branch --show-current)"
   echo "  SHA:   $(git rev-parse HEAD | head -c 12)"
