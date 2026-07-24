@@ -158,8 +158,8 @@ do_install() {
   mkdir -p "$target_dir"
 
   if [ ! -w "$target_dir" ]; then
-    sudo cp -f "$src" "$target"
-    sudo chmod +x "$target"
+    sudo -n cp -f "$src" "$target" 2>/dev/null || sudo cp -f "$src" "$target"
+    sudo -n chmod +x "$target" 2>/dev/null || sudo chmod +x "$target"
     log_info "已安装（sudo）: $target"
   else
     cp -f "$src" "$target"
@@ -180,20 +180,9 @@ resolve_target() {
   fi
 
   if which reasonix-go &>/dev/null; then
-    local existing
-    existing="$(which reasonix-go)"
-    local existing_dir
-    existing_dir="$(dirname "$existing")"
-    if [ -w "$existing_dir" ]; then
-      echo "$existing"
-      return
-    fi
-    # 不可写但有 sudoers 免密，仍用此路径并通过 sudo 安装
-    if sudo -n true 2>/dev/null; then
-      echo "$existing"
-      return
-    fi
-    log_warn "已有路径 $existing_dir 不可写且无 sudo，尝试 ~/.local/bin"
+    # 总是使用检测到的路径，do_install 会自动处理 sudo
+    which reasonix-go
+    return
   fi
 
   local fallback="$HOME/.local/bin/reasonix-go"
