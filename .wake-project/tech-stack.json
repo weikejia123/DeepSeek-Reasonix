@@ -1,8 +1,8 @@
 {
-  "schema_version": "8",
+  "schema_version": "9",
   "project_id": "019f8451-b2a7-7690-99e7-9bd9a7945ccb",
-  "scan_id": "019f8451-b567-7743-92d9-b28d5299b6b4",
-  "scanned_at": "2026-07-21T10:56:15Z",
+  "scan_id": "019fa34f-d085-7a21-a41b-52e2e7f4083e",
+  "scanned_at": "2026-07-27T11:22:24Z",
   "tech_stack": [
     {
       "name": "@gsap/react",
@@ -306,6 +306,20 @@
       "source": "desktop/go.mod"
     },
     {
+      "name": "github.com/kevinburke/ssh_config",
+      "category": "library",
+      "version": "v1.6.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/kr/fs",
+      "category": "library",
+      "version": "v0.1.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
       "name": "github.com/labstack/gommon",
       "category": "library",
       "version": "v0.5.0",
@@ -383,6 +397,13 @@
       "source": "desktop/go.mod"
     },
     {
+      "name": "github.com/nfnt/resize",
+      "category": "library",
+      "version": "v0.0.0-20180221191011-83c6a9932646",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
       "name": "github.com/pkg/browser",
       "category": "library",
       "version": "v0.0.0-20240102092130-5ac0b6a4141c",
@@ -393,6 +414,13 @@
       "name": "github.com/pkg/errors",
       "category": "library",
       "version": "v0.9.1",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/pkg/sftp",
+      "category": "library",
+      "version": "v1.13.10",
       "dev": false,
       "source": "desktop/go.mod"
     },
@@ -414,6 +442,20 @@
       "name": "github.com/samber/lo",
       "category": "library",
       "version": "v1.53.0",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "category": "library",
+      "version": "v6.0.2",
+      "dev": false,
+      "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/tc-hib/winres",
+      "category": "library",
+      "version": "v0.3.1",
       "dev": false,
       "source": "desktop/go.mod"
     },
@@ -539,7 +581,7 @@
     {
       "name": "golang.org/x/text",
       "category": "library",
-      "version": "v0.38.0",
+      "version": "v0.39.0",
       "dev": false,
       "source": "desktop/go.mod"
     },
@@ -563,6 +605,48 @@
       "version": "v0.0.0",
       "dev": false,
       "source": "desktop/go.mod"
+    },
+    {
+      "name": "github.com/davecgh/go-spew",
+      "category": "library",
+      "version": "v1.1.1",
+      "dev": false,
+      "source": "desktop/third_party/go-webview2/go.mod"
+    },
+    {
+      "name": "github.com/jchv/go-winloader",
+      "category": "library",
+      "version": "v0.0.0-20210711035445-715c2860da7e",
+      "dev": false,
+      "source": "desktop/third_party/go-webview2/go.mod"
+    },
+    {
+      "name": "github.com/pmezard/go-difflib",
+      "category": "library",
+      "version": "v1.0.0",
+      "dev": false,
+      "source": "desktop/third_party/go-webview2/go.mod"
+    },
+    {
+      "name": "github.com/stretchr/testify",
+      "category": "library",
+      "version": "v1.9.0",
+      "dev": false,
+      "source": "desktop/third_party/go-webview2/go.mod"
+    },
+    {
+      "name": "golang.org/x/sys",
+      "category": "library",
+      "version": "v0.27.0",
+      "dev": false,
+      "source": "desktop/third_party/go-webview2/go.mod"
+    },
+    {
+      "name": "gopkg.in/yaml.v3",
+      "category": "library",
+      "version": "v3.0.1",
+      "dev": false,
+      "source": "desktop/third_party/go-webview2/go.mod"
     },
     {
       "name": "charm.land/bubbles/v2",
@@ -733,6 +817,20 @@
       "source": "go.mod"
     },
     {
+      "name": "github.com/kevinburke/ssh_config",
+      "category": "library",
+      "version": "v1.6.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/kr/fs",
+      "category": "library",
+      "version": "v0.1.0",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
       "name": "github.com/larksuite/oapi-sdk-go/v3",
       "category": "library",
       "version": "v3.9.5",
@@ -768,6 +866,13 @@
       "source": "go.mod"
     },
     {
+      "name": "github.com/pkg/sftp",
+      "category": "library",
+      "version": "v1.13.10",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
       "name": "github.com/rivo/uniseg",
       "category": "library",
       "version": "v0.4.7",
@@ -778,6 +883,20 @@
       "name": "github.com/sabhiram/go-gitignore",
       "category": "library",
       "version": "v0.0.0-20210923224102-525f6e181f06",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/santhosh-tekuri/jsonschema/v6",
+      "category": "library",
+      "version": "v6.0.2",
+      "dev": false,
+      "source": "go.mod"
+    },
+    {
+      "name": "github.com/spf13/pflag",
+      "category": "library",
+      "version": "v1.0.6",
       "dev": false,
       "source": "go.mod"
     },
@@ -896,7 +1015,7 @@
     {
       "name": "golang.org/x/text",
       "category": "library",
-      "version": "v0.38.0",
+      "version": "v0.39.0",
       "dev": false,
       "source": "go.mod"
     },
@@ -995,6 +1114,13 @@
       "name": "TypeScript",
       "category": "tool",
       "version": "^5.8.0",
+      "dev": true,
+      "source": "workers/crash-report/package.json"
+    },
+    {
+      "name": "Vitest",
+      "category": "tool",
+      "version": "^3.2.0",
       "dev": true,
       "source": "workers/crash-report/package.json"
     },

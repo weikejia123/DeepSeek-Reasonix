@@ -1,14 +1,21 @@
 {
-  "schema_version": "8",
+  "schema_version": "9",
   "project_id": "019f8451-b2a7-7690-99e7-9bd9a7945ccb",
-  "scan_id": "019f8451-b567-7743-92d9-b28d5299b6b4",
-  "scanned_at": "2026-07-21T10:56:15Z",
-  "duration_ms": 305,
+  "scan_id": "019fa34f-d085-7a21-a41b-52e2e7f4083e",
+  "scanned_at": "2026-07-27T11:22:24Z",
+  "duration_ms": 287,
   "is_git_repo": true,
   "git": {
     "root": "/Users/weikejia/CODE/my-agent-group/projects/coder-agent/DeepSeek-Reasonix",
-    "branch": "wkj-cli",
+    "branch": "wkj-dev",
     "remotes": [
+      {
+        "name": "gitea",
+        "url": "http://localhost:3000/dzsoft/DeepSeek-Reasonix.git",
+        "host": "localhost",
+        "owner": "dzsoft",
+        "repo": "DeepSeek-Reasonix"
+      },
       {
         "name": "origin",
         "url": "https://github.com/weikejia123/DeepSeek-Reasonix.git",
@@ -24,34 +31,34 @@
         "repo": "DeepSeek-Reasonix"
       }
     ],
-    "head": "6a66ffd5",
+    "head": "675f778f",
     "path_prefix": "",
     "has_commit_hooks": false,
-    "has_upstream": false,
+    "has_upstream": true,
     "is_detached_head": false,
-    "dirty_file_count": 11,
+    "dirty_file_count": 4,
     "has_untracked": true,
-    "ahead_count": null,
-    "behind_count": null,
-    "latest_tag": "desktop-v1.17.10",
+    "ahead_count": 0,
+    "behind_count": 0,
+    "latest_tag": "desktop-v1.17.19",
     "submodules": []
   },
   "detected_languages": [
     {
       "language": "Go",
-      "files": 910
+      "files": 1378
     },
     {
       "language": "TypeScript",
-      "files": 275
+      "files": 359
     },
     {
       "language": "JavaScript",
-      "files": 17
+      "files": 32
     },
     {
       "language": "Python",
-      "files": 3
+      "files": 9
     },
     {
       "language": "Objective-C",
@@ -96,6 +103,12 @@
       "version": null
     },
     {
+      "path": "desktop/third_party/go-webview2/go.mod",
+      "kind": "go.mod",
+      "name": "github.com/wailsapp/go-webview2",
+      "version": null
+    },
+    {
       "path": "go.mod",
       "kind": "go.mod",
       "name": "reasonix",
@@ -135,17 +148,17 @@
   "package_managers": [],
   "timeline": {
     "first_commit_at": "2026-05-29T17:53:10-07:00",
-    "last_commit_at": "2026-07-21T03:45:55+08:00",
+    "last_commit_at": "2026-07-24T16:28:38+08:00",
     "shallow_clone": false,
-    "last_file_modified_at": "2026-07-11T07:46:30Z",
-    "last_core_file_modified_at": "2026-07-11T07:46:30Z",
+    "last_file_modified_at": "2026-07-24T08:29:25Z",
+    "last_core_file_modified_at": "2026-07-23T23:31:24Z",
     "local_arrival_at": "2026-06-04T15:25:35Z",
     "local_arrival_source": "git_dir_birthtime",
     "local_arrival_approximate": true
   },
   "totals": {
-    "file_count": 1856,
-    "size_bytes": 388173118,
+    "file_count": 2624,
+    "size_bytes": 482529765,
     "scope": "excluding_ignored_dirs"
   },
   "ignored_dirs": [
