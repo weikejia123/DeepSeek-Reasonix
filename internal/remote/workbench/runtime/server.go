@@ -25,6 +25,7 @@ import (
 
 	"reasonix/internal/billing"
 	"reasonix/internal/boot"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
 	"reasonix/internal/fileref"
@@ -66,6 +67,7 @@ type SessionController interface {
 	History() []provider.Message
 	Turn() int
 	Running() bool
+	RuntimeStatus() control.RuntimeStatus
 	Submit(string)
 	Cancel()
 	Close()
@@ -73,6 +75,17 @@ type SessionController interface {
 	SetSessionPath(string)
 	EnsureSessionPath()
 	AdoptHistory([]provider.Message, string)
+}
+
+func sessionHasActiveWorkLocked(sess *session) bool {
+	if sess == nil || sess.ctrl == nil {
+		return false
+	}
+	if sess.currentTurn != "" || sess.currentOp != nil {
+		return true
+	}
+	status := sess.ctrl.RuntimeStatus()
+	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
 }
 
 type Server struct {
@@ -111,6 +124,7 @@ type Server struct {
 type session struct {
 	id            protocol.SessionID
 	ctrl          SessionController
+	leases        *control.SessionLeaseKeeper
 	model         string
 	effort        string
 	collaboration protocol.CollaborationMode
@@ -129,6 +143,60 @@ type session struct {
 	pendingPrompt *protocol.PendingPrompt
 	liveEvents    []eventwire.Event
 	sink          *sessionSink
+}
+
+func closeRuntimeSession(sess *session) {
+	if sess == nil {
+		return
+	}
+	if sess.ctrl != nil {
+		sess.ctrl.Close()
+	}
+	if sess.leases != nil {
+		sess.leases.Release()
+	}
+}
+
+func (sess *session) rebindSessionLease(path string) error {
+	if sess == nil {
+		return nil
+	}
+	if sess.leases == nil {
+		sess.leases = control.NewSessionLeaseKeeper()
+	}
+	return sess.leases.Rebind(path)
+}
+
+// retireSessionAfterLeaseFailure fails closed after a controller has already
+// committed a path rotation that cannot be protected by a session lease. The
+// controller mutation cannot be rolled back safely, so the runtime must stop
+// serving it: leaving it registered would let the old runtime epoch drive a new,
+// unleased transcript. Registry cleanup is best-effort because the primary
+// invariant is that no further writes are admitted through this process.
+func (s *Server) retireSessionAfterLeaseFailure(sess *session, operation string, leaseErr error) {
+	if sess == nil {
+		return
+	}
+	removed := false
+	s.mu.Lock()
+	if s.sessions[sess.id] == sess {
+		delete(s.sessions, sess.id)
+		for id, sub := range s.subs {
+			if sub.sessionID == sess.id {
+				delete(s.subs, id)
+			}
+		}
+		removed = true
+	}
+	s.mu.Unlock()
+	if !removed {
+		return
+	}
+	closeRuntimeSession(sess)
+	s.logRegistryError(operation+" session lease", leaseErr)
+	if err := s.persistSessionRegistry(); err != nil {
+		s.logRegistryError("persist retired session after lease failure", err)
+	}
 }
 
 type subscription struct {
@@ -709,6 +777,12 @@ func (s *Server) create(ctx context.Context, p protocol.SessionCreateParams) (pr
 		return protocol.SessionCreateResult{}, errors.New("controller builder returned nil")
 	}
 	ctrl.EnsureSessionPath()
+	leases := control.NewSessionLeaseKeeper()
+	if err := leases.Rebind(ctrl.SessionPath()); err != nil {
+		ctrl.Close()
+		leases.Release()
+		return protocol.SessionCreateResult{}, protocol.MustRemoteError(protocol.ErrRuntimeStartFailed, protocol.ErrorOptions{})
+	}
 	now := time.Now().UnixMilli()
 	title := strings.TrimSpace(p.Topic.Title)
 	if title == "" {
@@ -719,7 +793,7 @@ func (s *Server) create(ctx context.Context, p protocol.SessionCreateParams) (pr
 		topicID = protocol.TopicID("topic_" + randomHex(8))
 	}
 	sess := &session{
-		id: id, ctrl: ctrl, model: ctrl.ModelRef(), effort: effort,
+		id: id, ctrl: ctrl, leases: leases, model: ctrl.ModelRef(), effort: effort,
 		collaboration: collaboration, tokenMode: tokenMode, toolApproval: toolApproval,
 		topicID: topicID, title: title,
 		runtimeEpoch: protocol.RuntimeEpoch("runtime_" + randomHex(12)),
@@ -735,7 +809,7 @@ func (s *Server) create(ctx context.Context, p protocol.SessionCreateParams) (pr
 			delete(s.sessions, id)
 		}
 		s.mu.Unlock()
-		ctrl.Close()
+		closeRuntimeSession(sess)
 		return protocol.SessionCreateResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{})
 	}
 	return protocol.SessionCreateResult{
@@ -781,7 +855,7 @@ func (s *Server) closeSession(p protocol.SessionCloseParams) (protocol.SessionCl
 		return protocol.SessionCloseResult{}, err
 	}
 	s.mu.Lock()
-	busy := sess.currentTurn != "" || sess.currentOp != nil || sess.ctrl.Running()
+	busy := sessionHasActiveWorkLocked(sess)
 	s.mu.Unlock()
 	if busy {
 		return protocol.SessionCloseResult{Disposition: protocol.SessionRetainedActive}, nil
@@ -811,7 +885,7 @@ func (s *Server) closeSession(p protocol.SessionCloseParams) (protocol.SessionCl
 		s.mu.Unlock()
 		return protocol.SessionCloseResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{})
 	}
-	sess.ctrl.Close()
+	closeRuntimeSession(sess)
 	return protocol.SessionCloseResult{Disposition: protocol.SessionReleased}, nil
 }
 
@@ -1051,6 +1125,10 @@ func (s *Server) newSession(p protocol.SessionNewParams) (protocol.SessionNewRes
 	if err := controller.NewSession(); err != nil {
 		return protocol.SessionNewResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
 	}
+	if err := sess.rebindSessionLease(sess.ctrl.SessionPath()); err != nil {
+		s.retireSessionAfterLeaseFailure(sess, "new", err)
+		return protocol.SessionNewResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+	}
 	epoch := s.commitSessionRotation(sess)
 	if err := s.persistSessionRegistry(); err != nil {
 		// NewSession already rotated the controller and cannot be rolled back
@@ -1071,6 +1149,10 @@ func (s *Server) clearSession(p protocol.SessionClearParams) (protocol.SessionCl
 		return protocol.SessionClearResult{}, protocol.MustRemoteError(protocol.ErrCapabilityUnavailable, protocol.ErrorOptions{})
 	}
 	if err := controller.ClearSession(); err != nil {
+		return protocol.SessionClearResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+	}
+	if err := sess.rebindSessionLease(sess.ctrl.SessionPath()); err != nil {
+		s.retireSessionAfterLeaseFailure(sess, "clear", err)
 		return protocol.SessionClearResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
 	}
 	epoch := s.commitSessionRotation(sess)
@@ -1135,7 +1217,7 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 		return protocol.SessionProfileSetResult{}, err
 	}
 	s.mu.Lock()
-	busy := sess.currentTurn != "" || sess.currentOp != nil || sess.ctrl.Running()
+	busy := sessionHasActiveWorkLocked(sess)
 	s.mu.Unlock()
 	if busy {
 		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionBusy, protocol.ErrorOptions{Target: &p.Target})
@@ -1157,6 +1239,14 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 	if p.Patch.ToolApprovalMode != nil {
 		toolApproval = *p.Patch.ToolApprovalMode
 	}
+	var goal *string
+	if p.Patch.Goal != nil {
+		value := strings.TrimSpace(*p.Patch.Goal)
+		goal = &value
+		if _, ok := sess.ctrl.(durableGoalController); !ok {
+			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrCapabilityUnavailable, protocol.ErrorOptions{})
+		}
+	}
 	rebuild := model != sess.model || effort != sess.effort || tokenMode != sess.tokenMode
 	if !rebuild {
 		s.mu.Lock()
@@ -1169,19 +1259,52 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 		ctrl := sess.ctrl
 		profile, epoch := resolvedProfile(sess), sess.runtimeEpoch
 		s.mu.Unlock()
-		applyControllerProfile(ctrl, collaboration, toolApproval)
+		var txn *profileGoalTransaction
+		if goal != nil {
+			txn, err = s.beginProfileGoalTransaction(ctrl.SessionPath())
+			if err != nil {
+				s.mu.Lock()
+				if s.sessions[sess.id] == sess && sess.collaboration == collaboration && sess.toolApproval == toolApproval {
+					sess.collaboration, sess.toolApproval = previousCollaboration, previousToolApproval
+				}
+				s.mu.Unlock()
+				return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+			}
+		}
 		if err := s.persistSessionRegistry(); err != nil {
 			s.mu.Lock()
-			var rollbackCtrl SessionController
 			if s.sessions[sess.id] == sess && sess.collaboration == collaboration && sess.toolApproval == toolApproval {
 				sess.collaboration, sess.toolApproval = previousCollaboration, previousToolApproval
-				rollbackCtrl = sess.ctrl
 			}
 			s.mu.Unlock()
-			if rollbackCtrl != nil {
-				applyControllerProfile(rollbackCtrl, previousCollaboration, previousToolApproval)
-			}
+			_ = s.rollbackProfileGoalTransaction(txn)
 			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+		}
+		applyControllerProfile(ctrl, collaboration, toolApproval)
+		if goal != nil {
+			if err := ctrl.(durableGoalController).SetGoalDurable(*goal, profileTransactionCreateToken(txn)); err != nil {
+				s.mu.Lock()
+				if s.sessions[sess.id] == sess && sess.collaboration == collaboration && sess.toolApproval == toolApproval {
+					sess.collaboration, sess.toolApproval = previousCollaboration, previousToolApproval
+				}
+				s.mu.Unlock()
+				applyControllerProfile(ctrl, previousCollaboration, previousToolApproval)
+				_ = s.rollbackProfileGoalTransaction(txn)
+				return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+			}
+			if err := s.commitProfileGoalTransaction(txn); err != nil {
+				_ = s.rollbackProfileGoalTransaction(txn)
+				ctrl.AdoptHistory(ctrl.History(), ctrl.SessionPath())
+				s.mu.Lock()
+				if s.sessions[sess.id] == sess && sess.collaboration == collaboration && sess.toolApproval == toolApproval {
+					sess.collaboration, sess.toolApproval = previousCollaboration, previousToolApproval
+				}
+				s.mu.Unlock()
+				applyControllerProfile(ctrl, previousCollaboration, previousToolApproval)
+				return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+			}
+			_ = finishProfileGoalTransaction(txn)
+			s.notifyStateChanged(sess.id)
 		}
 		return protocol.SessionProfileSetResult{
 			ResolvedProfile: profile, RuntimeEpoch: epoch,
@@ -1195,8 +1318,14 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 	}
 	newController.AdoptHistory(sess.ctrl.History(), sess.ctrl.SessionPath())
 	applyControllerProfile(newController, collaboration, toolApproval)
+	if goal != nil {
+		if _, ok := newController.(durableGoalController); !ok {
+			newController.Close()
+			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrCapabilityUnavailable, protocol.ErrorOptions{})
+		}
+	}
 	s.mu.Lock()
-	if s.sessions[sess.id] != sess || sess.currentTurn != "" || sess.currentOp != nil || sess.ctrl.Running() {
+	if s.sessions[sess.id] != sess || sessionHasActiveWorkLocked(sess) {
 		s.mu.Unlock()
 		newController.Close()
 		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionBusy, protocol.ErrorOptions{Target: &p.Target})
@@ -1205,6 +1334,23 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 	previousModel, previousEffort := sess.model, sess.effort
 	previousCollaboration, previousTokenMode, previousToolApproval := sess.collaboration, sess.tokenMode, sess.toolApproval
 	previousEpoch, previousUpdatedAt := sess.runtimeEpoch, sess.updatedAt
+	sessionPath := old.SessionPath()
+	s.mu.Unlock()
+	var txn *profileGoalTransaction
+	if goal != nil {
+		txn, err = s.beginProfileGoalTransaction(sessionPath)
+		if err != nil {
+			newController.Close()
+			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+		}
+	}
+	s.mu.Lock()
+	if s.sessions[sess.id] != sess || sess.ctrl != old || sessionHasActiveWorkLocked(sess) {
+		s.mu.Unlock()
+		_ = finishProfileGoalTransaction(txn)
+		newController.Close()
+		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionBusy, protocol.ErrorOptions{Target: &p.Target})
+	}
 	sess.ctrl = newController
 	sess.model = newController.ModelRef()
 	sess.effort = effort
@@ -1223,8 +1369,41 @@ func (s *Server) setProfile(ctx context.Context, p protocol.SessionProfileSetPar
 			sess.runtimeEpoch, sess.updatedAt = previousEpoch, previousUpdatedAt
 		}
 		s.mu.Unlock()
+		_ = s.rollbackProfileGoalTransaction(txn)
 		newController.Close()
 		return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+	}
+	if goal != nil {
+		if err := newController.(durableGoalController).SetGoalDurable(*goal, profileTransactionCreateToken(txn)); err != nil {
+			s.mu.Lock()
+			restored := s.sessions[sess.id] == sess && sess.ctrl == newController
+			if restored {
+				sess.ctrl = old
+				sess.model, sess.effort = previousModel, previousEffort
+				sess.collaboration, sess.tokenMode, sess.toolApproval = previousCollaboration, previousTokenMode, previousToolApproval
+				sess.runtimeEpoch, sess.updatedAt = previousEpoch, previousUpdatedAt
+			}
+			s.mu.Unlock()
+			_ = s.rollbackProfileGoalTransaction(txn)
+			newController.Close()
+			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+		}
+		if err := s.commitProfileGoalTransaction(txn); err != nil {
+			s.mu.Lock()
+			restored := s.sessions[sess.id] == sess && sess.ctrl == newController
+			if restored {
+				sess.ctrl = old
+				sess.model, sess.effort = previousModel, previousEffort
+				sess.collaboration, sess.tokenMode, sess.toolApproval = previousCollaboration, previousTokenMode, previousToolApproval
+				sess.runtimeEpoch, sess.updatedAt = previousEpoch, previousUpdatedAt
+			}
+			s.mu.Unlock()
+			_ = s.rollbackProfileGoalTransaction(txn)
+			newController.Close()
+			return protocol.SessionProfileSetResult{}, protocol.MustRemoteError(protocol.ErrSessionPersistFailed, protocol.ErrorOptions{Target: &p.Target})
+		}
+		_ = finishProfileGoalTransaction(txn)
+		s.notifyStateChanged(sess.id)
 	}
 	old.Close()
 	return protocol.SessionProfileSetResult{
@@ -1771,17 +1950,17 @@ func (s *Server) snapshotAndClose() {
 			s.logRegistryError("persist before shutdown", err)
 		}
 		s.mu.Lock()
-		controllers := make([]SessionController, 0, len(s.sessions))
+		sessions := make([]*session, 0, len(s.sessions))
 		for _, sess := range s.sessions {
-			if sess.ctrl != nil {
-				controllers = append(controllers, sess.ctrl)
+			if sess != nil {
+				sessions = append(sessions, sess)
 			}
 		}
 		s.sessions = make(map[protocol.SessionID]*session)
 		s.subs = make(map[protocol.SubscriptionID]*subscription)
 		s.mu.Unlock()
-		for _, ctrl := range controllers {
-			ctrl.Close()
+		for _, sess := range sessions {
+			closeRuntimeSession(sess)
 		}
 	})
 }

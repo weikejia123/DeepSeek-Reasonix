@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,45 @@ func TestAgentKeepPolicyFromConfig(t *testing.T) {
 	}
 	if got := agentKeepPolicy([]string{"errors", "user_marked"}); got != agent.KeepErrors|agent.KeepUserMarked {
 		t.Fatalf("combined keep policy = %v, want errors|user_marked", got)
+	}
+}
+
+func TestApplyRuntimeAutoPricingCurrency(t *testing.T) {
+	tests := []struct {
+		name            string
+		runtimeCurrency string
+		desktopCurrency string
+		desktopLanguage string
+		language        string
+		wantCurrency    string
+		wantOutput      float64
+	}{
+		{name: "auto Chinese locale", runtimeCurrency: "CNY", wantCurrency: "¥", wantOutput: 2},
+		{name: "auto English locale", runtimeCurrency: "USD", wantCurrency: "$", wantOutput: 0.28},
+		{name: "explicit USD wins", runtimeCurrency: "CNY", desktopCurrency: "USD", wantCurrency: "$", wantOutput: 0.28},
+		{name: "explicit CNY wins", runtimeCurrency: "USD", desktopCurrency: "CNY", wantCurrency: "¥", wantOutput: 2},
+		{name: "desktop language wins", runtimeCurrency: "USD", desktopLanguage: "zh", wantCurrency: "¥", wantOutput: 2},
+		{name: "CLI language wins", runtimeCurrency: "USD", language: "zh", wantCurrency: "¥", wantOutput: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Desktop.Currency = tt.desktopCurrency
+			cfg.Desktop.Language = tt.desktopLanguage
+			cfg.Language = tt.language
+			cfg.ApplyDeepSeekOfficialDefaultPricing()
+
+			applyRuntimeAutoPricingCurrency(cfg, tt.runtimeCurrency)
+
+			deepseek, ok := cfg.Provider("deepseek-flash")
+			if !ok {
+				t.Fatal("default DeepSeek provider is missing")
+			}
+			price := deepseek.PriceForModel("deepseek-v4-flash")
+			if price == nil || price.Currency != tt.wantCurrency || price.Output != tt.wantOutput {
+				t.Fatalf("flash price = %#v, want currency %q output %v", price, tt.wantCurrency, tt.wantOutput)
+			}
+		})
 	}
 }
 
@@ -487,7 +527,8 @@ model = "x"
 		t.Fatalf("LoadSession: %v", err)
 	}
 	msgs := sess.Snapshot()
-	if len(msgs) != 5 || !strings.HasSuffix(msgs[1].Content, "first skill task") || msgs[2].Content != "first skill answer" || msgs[3].Content != "second skill task" || !msgs[4].LocalOnly {
+	modelMessages := provider.ModelMessages(msgs)
+	if len(msgs) != 5 || len(modelMessages) != 4 || !strings.HasSuffix(modelMessages[1].Content, "first skill task") || modelMessages[2].Content != "first skill answer" || modelMessages[3].Content != "second skill task" || !msgs[4].LocalOnly {
 		t.Fatalf("failed skill transcript = %+v, want tasks plus provider-excluded failure recovery", msgs)
 	}
 }
@@ -1286,6 +1327,92 @@ func TestNewProviderAppliesConfiguredDefaultEffort(t *testing.T) {
 	}
 }
 
+func TestNewProviderPreservesExplicitlySupportedKimiK3Efforts(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider(&config.ProviderEntry{
+		Name:              "opencode-go",
+		Kind:              "openai",
+		BaseURL:           srv.URL,
+		Model:             "kimi-k3",
+		ReasoningProtocol: config.ReasoningProtocolOpenAI,
+		SupportedEfforts:  []string{"high", "max"},
+		DefaultEffort:     "max",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if got := gotReq["reasoning_effort"]; got != "max" {
+		t.Fatalf("reasoning_effort = %#v, want explicitly supported max", got)
+	}
+}
+
+func TestNewProviderAppliesOfficialKimiK3RequestContract(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider(&config.ProviderEntry{
+		Name:              "kimi-cn",
+		Kind:              "openai",
+		BaseURL:           "https://api.moonshot.cn/v1",
+		ChatURL:           srv.URL,
+		Model:             "kimi-k3",
+		ReasoningProtocol: config.ReasoningProtocolOpenAI,
+		SupportedEfforts:  []string{"low", "high", "max"},
+		DefaultEffort:     "max",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		Messages:    []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Temperature: provider.TemperaturePtr(0),
+		MaxTokens:   2000,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+	if gotReq["reasoning_effort"] != "max" || gotReq["max_completion_tokens"] != float64(2000) {
+		t.Fatalf("official Kimi K3 request = %+v, want max effort and max_completion_tokens", gotReq)
+	}
+	for _, field := range []string{"temperature", "max_tokens"} {
+		if _, ok := gotReq[field]; ok {
+			t.Fatalf("official Kimi K3 request must omit %q: %+v", field, gotReq)
+		}
+	}
+}
+
 func TestNewProviderAppliesModelReasoningProtocol(t *testing.T) {
 	var gotReq map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1649,6 +1776,72 @@ model = "x"
 	}
 	if requestMessageContains(fullReq.Messages, provider.RoleUser, "<delivery-runtime>") {
 		t.Fatal("full profile unexpectedly received the delivery runtime contract")
+	}
+}
+
+func TestBuildBalancedDualModelAddsStableProxyToExecutor(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("balanced-dual-proxy")
+	setBootTokenProfileTestProvider(t, prov)
+
+	writeConfig := func(planner bool) {
+		plannerLine := ""
+		plannerProvider := ""
+		if planner {
+			plannerLine = `planner_model = "planner"`
+			plannerProvider = `
+
+[[providers]]
+name = "planner"
+kind = "boot-token-profile-test"
+model = "planner-model"`
+		}
+		writeFile(t, dir, "reasonix.toml", fmt.Sprintf(`
+default_model = "executor"
+
+[agent]
+system_prompt = "BASE"
+%s
+
+[[providers]]
+name = "executor"
+kind = "boot-token-profile-test"
+model = "executor-model"%s
+`, plannerLine, plannerProvider))
+	}
+
+	writeConfig(false)
+	single, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleEntries := single.ToolContractEntries()
+	single.Close()
+	if slices.Contains(contractEntryNames(singleEntries), "use_capability") {
+		t.Fatal("single-model Balanced must keep its existing executor prefix")
+	}
+
+	writeConfig(true)
+	dual, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dual.Close()
+	dualEntries := dual.ToolContractEntries()
+	dualNames := contractEntryNames(dualEntries)
+	if !slices.Contains(dualNames, "use_capability") {
+		t.Fatalf("dual-model Balanced executor missing stable capability proxy: %v", dualNames)
+	}
+	if len(dualEntries) != len(singleEntries)+1 {
+		t.Fatalf("dual-model executor contract = %d tools, want single-model(%d)+use_capability", len(dualEntries), len(singleEntries))
+	}
+	for _, entry := range singleEntries {
+		if !slices.Contains(dualNames, entry.Name) {
+			t.Fatalf("dual-model executor dropped existing tool %q", entry.Name)
+		}
 	}
 }
 
@@ -3593,6 +3786,39 @@ allow = ["Bash(go test:*)"]
 	}
 }
 
+func TestRememberDynamicBashLiteralIsNotCoveredByBroadRule(t *testing.T) {
+	workspace := robustTempDir(t)
+	writeFile(t, workspace, "reasonix.toml", `
+[permissions]
+allow = ["Bash(git*)"]
+`)
+
+	const literal = "Bash=git status $(touch /tmp/reasonix-dynamic-approval)"
+	res := rememberPermissionRule(workspace, literal)
+	if !res.Saved || res.CoveredBy != "" || res.Err != nil {
+		t.Fatalf("remember dynamic literal = %+v, want newly saved rule", res)
+	}
+	cfg := config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
+	if !hasPermissionRule(cfg.Permissions.Allow, "Bash(git*)") || !hasPermissionRule(cfg.Permissions.Allow, literal) {
+		t.Fatalf("allow rules = %v, want broad rule and dynamic literal", cfg.Permissions.Allow)
+	}
+
+	res = rememberPermissionRule(workspace, literal)
+	if res.Saved || res.CoveredBy != literal || res.Err != nil {
+		t.Fatalf("remember duplicate dynamic literal = %+v, want exact deduplication", res)
+	}
+	cfg = config.LoadForEdit(filepath.Join(workspace, "reasonix.toml"))
+	count := 0
+	for _, rule := range cfg.Permissions.Allow {
+		if rule == literal {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("dynamic literal count = %d in %v, want 1", count, cfg.Permissions.Allow)
+	}
+}
+
 func TestRememberPermissionRulePrunesNarrowRulesWhenSavingBroaderRule(t *testing.T) {
 	workspace := robustTempDir(t)
 	writeFile(t, workspace, "reasonix.toml", `
@@ -4073,8 +4299,8 @@ func TestPluginSpecsMapMCPSourceDefaults(t *testing.T) {
 		{name: "user config", source: config.MCPSourceUserConfig, wantAuthorized: true},
 		{name: "legacy user config", source: config.MCPSourceLegacyUser, wantAuthorized: true},
 		{name: "plugin package", source: config.MCPSourcePluginPackage, wantAuthorized: true},
-		{name: "project config", source: config.MCPSourceProjectConfig, wantApproval: true},
-		{name: "project mcp json", source: config.MCPSourceProjectMCPJSON, wantApproval: true},
+		{name: "project config", source: config.MCPSourceProjectConfig, wantAuthorized: true},
+		{name: "project mcp json", source: config.MCPSourceProjectMCPJSON, wantAuthorized: true},
 		{name: "unknown"},
 	}
 
@@ -4519,7 +4745,11 @@ model = "x"
 		testutil.Turn{Text: "done"},
 	)
 	setBootTokenProfileTestProvider(t, prov)
-	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, AdditionalDirs: []string{extra}})
+	ctrl, err := Build(context.Background(), Options{
+		Sink:                 event.Discard,
+		AdditionalDirs:       []string{extra},
+		HeadlessApprovalMode: control.ToolApprovalYolo,
+	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
