@@ -1,9 +1,9 @@
 {
   "schema_version": "9",
   "project_id": "019f8451-b2a7-7690-99e7-9bd9a7945ccb",
-  "scan_id": "019fa34f-d085-7a21-a41b-52e2e7f4083e",
-  "scanned_at": "2026-07-27T11:22:24Z",
-  "duration_ms": 287,
+  "scan_id": "019fb0ad-b901-7150-8704-938f486419ff",
+  "scanned_at": "2026-07-30T01:40:02Z",
+  "duration_ms": 293,
   "is_git_repo": true,
   "git": {
     "root": "/Users/weikejia/CODE/my-agent-group/projects/coder-agent/DeepSeek-Reasonix",
@@ -31,14 +31,14 @@
         "repo": "DeepSeek-Reasonix"
       }
     ],
-    "head": "675f778f",
+    "head": "e6811d14",
     "path_prefix": "",
     "has_commit_hooks": false,
     "has_upstream": true,
     "is_detached_head": false,
-    "dirty_file_count": 4,
+    "dirty_file_count": 1,
     "has_untracked": true,
-    "ahead_count": 0,
+    "ahead_count": 1,
     "behind_count": 0,
     "latest_tag": "desktop-v1.17.19",
     "submodules": []
@@ -148,7 +148,7 @@
   "package_managers": [],
   "timeline": {
     "first_commit_at": "2026-05-29T17:53:10-07:00",
-    "last_commit_at": "2026-07-24T16:28:38+08:00",
+    "last_commit_at": "2026-07-27T19:22:25+08:00",
     "shallow_clone": false,
     "last_file_modified_at": "2026-07-24T08:29:25Z",
     "last_core_file_modified_at": "2026-07-23T23:31:24Z",
