@@ -55,14 +55,12 @@ type ghAsset struct {
 type cliReleaseChannel string
 
 const (
-	cliReleaseStable  cliReleaseChannel = "stable"
-	cliReleasePreview cliReleaseChannel = "preview"
+	cliReleaseStable cliReleaseChannel = "stable"
 )
 
 var (
-	stableCLITagPattern  = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`)
-	previewCLITagPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-preview\.(?:0|[1-9][0-9]*)$`)
-	requiredCLIAssets    = [...]string{
+	stableCLITagPattern = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`)
+	requiredCLIAssets   = [...]string{
 		"reasonix-darwin-amd64.tar.gz",
 		"reasonix-darwin-arm64.tar.gz",
 		"reasonix-linux-amd64.tar.gz",
@@ -75,20 +73,20 @@ var (
 
 func parseCLIReleaseChannel(value string) (cliReleaseChannel, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", string(cliReleaseStable):
+	case "", string(cliReleaseStable), "preview", "canary", "beta", "next":
 		return cliReleaseStable, nil
-	case string(cliReleasePreview):
-		return cliReleasePreview, nil
 	default:
-		return "", fmt.Errorf("release channel %q: must be stable or preview", value)
+		return "", fmt.Errorf("release channel %q is unsupported; Reasonix now uses the official release", value)
 	}
 }
 
 type cliUpgradeSyntax struct {
-	checkOnly   bool
-	force       bool
-	positional  *cliReleaseChannel
-	flagChannel *cliReleaseChannel
+	checkOnly     bool
+	force         bool
+	positional    *cliReleaseChannel
+	flagChannel   *cliReleaseChannel
+	helpRequested bool
+	helpText      string
 }
 
 // parseCLIUpgradeSyntax accepts the ergonomic positional channel while keeping
@@ -97,17 +95,21 @@ type cliUpgradeSyntax struct {
 func parseCLIUpgradeSyntax(args []string) (cliUpgradeSyntax, error) {
 	fs := pflag.NewFlagSet("upgrade", pflag.ContinueOnError)
 	fs.SetInterspersed(true)
-	fs.SetOutput(io.Discard)
+	var parseOutput bytes.Buffer
+	fs.SetOutput(&parseOutput)
 	checkOnly := fs.Bool("check", false, "check for updates without installing")
 	force := fs.Bool("force", false, "reinstall even if already on the latest version")
-	channelValue := fs.String("channel", "", "release channel: stable or preview")
+	channelValue := fs.String("channel", "", "deprecated compatibility option; updates use the official release")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return cliUpgradeSyntax{helpRequested: true, helpText: parseOutput.String()}, nil
+		}
 		return cliUpgradeSyntax{}, err
 	}
 
 	var positional *cliReleaseChannel
 	if rest := fs.Args(); len(rest) > 1 {
-		return cliUpgradeSyntax{}, fmt.Errorf("upgrade accepts at most one positional channel (stable or preview)")
+		return cliUpgradeSyntax{}, fmt.Errorf("upgrade accepts at most one deprecated positional channel")
 	} else if len(rest) == 1 {
 		channel, err := parseCLIReleaseChannel(rest[0])
 		if err != nil || strings.TrimSpace(rest[0]) == "" {
@@ -122,7 +124,7 @@ func parseCLIUpgradeSyntax(args []string) (cliUpgradeSyntax, error) {
 	var flagChannel *cliReleaseChannel
 	if fs.Changed("channel") {
 		if strings.TrimSpace(*channelValue) == "" {
-			return cliUpgradeSyntax{}, fmt.Errorf("--channel requires stable or preview")
+			return cliUpgradeSyntax{}, fmt.Errorf("--channel requires a legacy channel value")
 		}
 		channel, err := parseCLIReleaseChannel(*channelValue)
 		if err != nil {
@@ -181,6 +183,10 @@ func upgradeCommand(args []string, version string) int {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
 	}
+	if syntax.helpRequested {
+		fmt.Fprint(os.Stdout, syntax.helpText)
+		return 0
+	}
 
 	// 1. Normalize running version.
 	cur, ok := normalizeVersion(version)
@@ -199,16 +205,20 @@ func upgradeCommand(args []string, version string) int {
 		fmt.Fprintf(os.Stderr, "%s cannot load config: empty result\n", i18n.M.ErrorPrefix)
 		return 1
 	}
+	legacyConfigChannel := strings.TrimSpace(cfg.CLI.UpdateChannel)
 	selectedChannel, persistChannel, err := resolveCLIUpgradeChannel(syntax, cfg.CLIUpdateChannel())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 2
 	}
-	if persistChannel {
+	if persistChannel || legacyConfigChannel != "" {
 		if err := persistCLIReleaseChannel(selectedChannel); err != nil {
 			fmt.Fprintf(os.Stderr, "%s cannot save CLI update channel: %v\n", i18n.M.ErrorPrefix, err)
 			return 1
 		}
+	}
+	if syntax.positional != nil || syntax.flagChannel != nil || legacyConfigChannel != "" {
+		fmt.Fprintln(os.Stderr, i18n.M.UpgradeChannelDeprecated)
 	}
 	spec := cfg.NetworkProxySpec()
 	c, err := netclient.NewHTTPClient(spec, netclient.TransportOptions{
@@ -221,7 +231,7 @@ func upgradeCommand(args []string, version string) int {
 	c.CheckRedirect = validateCLIUpgradeRedirect
 
 	// 3. Fetch latest release from GitHub API.
-	fmt.Printf("%s [%s]\n", i18n.M.UpgradeChecking, selectedChannel)
+	fmt.Println(i18n.M.UpgradeChecking)
 	rel, err := fetchLatestRelease(c, selectedChannel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s "+i18n.M.UpgradeFetchFailed+"\n", i18n.M.ErrorPrefix, err)
@@ -344,19 +354,14 @@ func isCLITag(tag string) bool {
 }
 
 func versionBelongsToCLIChannel(version string, channel cliReleaseChannel) bool {
-	switch channel {
-	case cliReleasePreview:
-		return previewCLITagPattern.MatchString(version)
-	default:
-		return stableCLITagPattern.MatchString(version)
-	}
+	return channel == cliReleaseStable && stableCLITagPattern.MatchString(version)
 }
 
 func releaseBelongsToCLIChannel(rel ghRelease, channel cliReleaseChannel) bool {
 	if !isCLITag(rel.TagName) || !versionBelongsToCLIChannel(rel.TagName, channel) {
 		return false
 	}
-	return rel.Prerelease == (channel == cliReleasePreview)
+	return !rel.Prerelease
 }
 
 func isHTTPSDownloadURL(raw string) bool {
@@ -488,6 +493,33 @@ func pickCLIRelease(rels []ghRelease, channel cliReleaseChannel) *ghRelease {
 	return &rels[best]
 }
 
+// githubAPIToken returns the token to authenticate release lookups with.
+// Anonymous GitHub API requests share a 60/hour quota per IP, which a NAT or
+// office network exhausts long before one user's upgrades do (#4449).
+func githubAPIToken() string {
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// githubRateLimitHint names the fix when a refusal is the anonymous quota
+// rather than a broken request.
+func githubRateLimitHint(resp *http.Response) string {
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests {
+		return ""
+	}
+	if resp.Header.Get("X-RateLimit-Remaining") != "0" {
+		return ""
+	}
+	if githubAPIToken() != "" {
+		return " (rate limited; retry after the window resets)"
+	}
+	return " (rate limited; set GITHUB_TOKEN to raise the quota)"
+}
+
 // fetchLatestRelease queries the GitHub Releases API and returns the newest
 // strict CLI release in the selected public channel.
 func fetchLatestRelease(c *http.Client, channel cliReleaseChannel) (*ghRelease, error) {
@@ -497,12 +529,15 @@ func fetchLatestRelease(c *http.Client, channel cliReleaseChannel) (*ghRelease, 
 		return pointerRelease, nil
 	}
 
-	req, err := http.NewRequest("GET", ghAPIReleases, nil)
+	req, err := http.NewRequest(http.MethodGet, ghAPIReleases, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "reasonix-cli")
+	if token := githubAPIToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.Do(req)
 	if err != nil {
@@ -510,7 +545,7 @@ func fetchLatestRelease(c *http.Client, channel cliReleaseChannel) (*ghRelease, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("release gateway: %v; GitHub API: %s", pointerErr, resp.Status)
+		return nil, fmt.Errorf("release gateway: %w; GitHub API: %s%s", pointerErr, resp.Status, githubRateLimitHint(resp))
 	}
 
 	var rels []ghRelease
@@ -521,11 +556,11 @@ func fetchLatestRelease(c *http.Client, channel cliReleaseChannel) (*ghRelease, 
 	if rel := pickCLIRelease(rels, channel); rel != nil {
 		return rel, nil
 	}
-	return nil, fmt.Errorf("release gateway: %v; no %s CLI release found in recent GitHub releases", pointerErr, channel)
+	return nil, fmt.Errorf("release gateway: %w; no %s CLI release found in recent GitHub releases", pointerErr, channel)
 }
 
 func fetchCLIReleasePointer(c *http.Client, pointerURL string, channel cliReleaseChannel) (*ghRelease, error) {
-	req, err := http.NewRequest("GET", pointerURL, nil)
+	req, err := http.NewRequest(http.MethodGet, pointerURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -582,7 +617,7 @@ func verifyChecksum(data []byte, fileName string, checksumFile []byte) error {
 	sum := sha256.Sum256(data)
 	got := hex.EncodeToString(sum[:])
 
-	for _, line := range strings.Split(strings.TrimSpace(string(checksumFile)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(checksumFile)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -711,7 +746,7 @@ func commitWindows(target, newPath, base, dir string) error {
 	if err := os.Rename(newPath, target); err != nil {
 		// Rollback: try to restore the old binary.
 		if rerr := os.Rename(oldPath, target); rerr != nil {
-			return fmt.Errorf("replace failed (%v); rollback also failed: %w", err, rerr)
+			return fmt.Errorf("replace failed (%w); rollback also failed: %w", err, rerr)
 		}
 		return fmt.Errorf("rename new binary: %w", err)
 	}

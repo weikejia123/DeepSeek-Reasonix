@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -339,7 +340,7 @@ func executableNames(command, pathext string) []string {
 	}
 	names := []string{command}
 	seen := map[string]bool{strings.ToLower(command): true}
-	for _, ext := range strings.Split(pathext, ";") {
+	for ext := range strings.SplitSeq(pathext, ";") {
 		ext = strings.TrimSpace(ext)
 		if ext == "" {
 			continue
@@ -475,9 +476,9 @@ func prepareStdioShellPATHProbe(cmd *exec.Cmd) {
 
 func parseShellPATH(out []byte, marker string) string {
 	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(lines[i], marker) {
-			return strings.TrimSpace(strings.TrimPrefix(lines[i], marker))
+	for _, line := range slices.Backward(lines) {
+		if rest, ok := strings.CutPrefix(line, marker); ok {
+			return strings.TrimSpace(rest)
 		}
 	}
 	return ""
@@ -512,8 +513,8 @@ func setEnvValue(env []string, key, value string) []string {
 }
 
 func envValue(env []string, key string) (string, bool) {
-	for i := len(env) - 1; i >= 0; i-- {
-		k, v, ok := strings.Cut(env[i], "=")
+	for _, entry := range slices.Backward(env) {
+		k, v, ok := strings.Cut(entry, "=")
 		if ok && envKeyEqual(k, key) {
 			return v, true
 		}
@@ -709,11 +710,21 @@ func (t *stdioTransport) withStderr(err error) error {
 	// close), and this path runs with callMu held — an unbounded wait here
 	// would wedge every future call on this transport.
 	waitWithBudget(t.wait, closeWaitBudget)
-	msg := t.stderr.String()
+	// This error is returned directly to callers outside startup as well as
+	// copied into diagnostics. Redact at the transport boundary so an early
+	// child exit cannot bypass the startup-specific redaction layer.
+	msg := secrets.RedactCredentials(t.stderr.String())
 	if msg == "" {
 		return err
 	}
 	return fmt.Errorf("%w: stderr: %s", err, msg)
+}
+
+func (t *stdioTransport) startupStderr() string {
+	if t == nil || t.stderr == nil {
+		return ""
+	}
+	return secrets.RedactCredentials(t.stderr.String())
 }
 
 // wait reaps the child exactly once; cmd.Wait blocks until the stderr-copy

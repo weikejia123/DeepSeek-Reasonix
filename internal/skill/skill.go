@@ -19,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -144,8 +145,7 @@ type Options struct {
 	MaxDepth         int
 	DisableBuiltins  bool // suppress shipped built-ins (test-only knob)
 	// DisableDiscovery returns an empty store without probing project, custom,
-	// global, plugin, or built-in skill sources. Recovery safe mode uses this so
-	// a broken or unreadable skill tree cannot interfere with startup.
+	// global, plugin, or built-in skill sources. It is a test-only isolation knob.
 	DisableDiscovery bool
 	// Stderr is the writer for diagnostic warnings. When nil, defaults to
 	// os.Stderr. Set to io.Discard to suppress output (e.g. during model
@@ -515,12 +515,7 @@ func normalizePluginPaths(paths map[string][]string) map[string][]string {
 }
 
 func stringSliceContains(items []string, want string) bool {
-	for _, item := range items {
-		if item == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(items, want)
 }
 
 // Roots exposes the discovery directories with their status for `/skill paths`.
@@ -1020,12 +1015,7 @@ func frontmatterHasSkillMarkerKey(content string) bool {
 }
 
 func isSkillMarkerFrontmatterKey(key string) bool {
-	for _, marker := range skillMarkerFrontmatterKeys {
-		if key == marker {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(skillMarkerFrontmatterKeys, key)
 }
 
 // Create scaffolds a new skill stub at the chosen scope. Refuses to overwrite.
@@ -1292,7 +1282,7 @@ func parseCSVFrontmatter(raw string) []string {
 		raw = strings.TrimSpace(raw[1 : len(raw)-1])
 	}
 	var out []string
-	for _, p := range strings.Split(raw, ",") {
+	for p := range strings.SplitSeq(raw, ",") {
 		if t := strings.Trim(strings.TrimSpace(p), `"'`); t != "" {
 			out = append(out, t)
 		}

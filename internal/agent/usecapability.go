@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -330,9 +331,7 @@ func cloneMCPSpec(in plugin.Spec) plugin.Spec {
 	out.Headers = cloneStringMap(in.Headers)
 	if in.ToolTimeouts != nil {
 		out.ToolTimeouts = make(map[string]time.Duration, len(in.ToolTimeouts))
-		for name, timeout := range in.ToolTimeouts {
-			out.ToolTimeouts[name] = timeout
-		}
+		maps.Copy(out.ToolTimeouts, in.ToolTimeouts)
 	}
 	return out
 }
@@ -342,9 +341,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -1151,17 +1148,29 @@ func (t *UseCapabilityTool) ensureServerToolsForSpec(ctx context.Context, server
 	if t.host.HasClient(server) {
 		return t.serverToolsForSpec(ctx, server, spec)
 	}
-	// On-demand connect: the handshake gets a short budget, but the child
-	// process lifetime belongs to the session-scoped lifeCtx — canceling the
-	// handshake context after connect must not kill a stdio server the tool
-	// call is about to use. Tools stay off the main registry.
+	// On-demand connect: the child and handshake belong to the session. This
+	// tool call waits briefly, but a slow healthy server continues in the
+	// background instead of being killed and restarted on every retry. Tools
+	// stay off the main provider-visible registry.
 	life := t.lifeCtx
 	if life == nil {
 		life = context.Background()
 	}
-	handshakeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	tools, err := t.host.AddWithLifecycle(life, handshakeCtx, spec)
+	result := t.host.EnsureConnectedInBackground(life, spec)
+	waitBudget := plugin.DefaultStartupWaitBudget()
+	timer := time.NewTimer(waitBudget)
+	defer timer.Stop()
+	var tools []tool.Tool
+	var err error
+	select {
+	case connected := <-result:
+		tools, err = connected.Tools, connected.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, fmt.Errorf("MCP server %q is still initializing after %s; startup continues in background (limit %s) — retry on a later turn",
+			server, waitBudget, spec.ResolvedStartupTimeout())
+	}
 	if err != nil {
 		if plugin.IsServerAlreadyConnected(err) {
 			return t.serverToolsForSpec(ctx, server, spec)

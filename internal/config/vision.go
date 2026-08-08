@@ -2,7 +2,10 @@ package config
 
 import (
 	"net/url"
+	"slices"
 	"strings"
+
+	"reasonix/internal/provider/openai"
 )
 
 var mimoVisionModels = map[string]bool{
@@ -37,10 +40,8 @@ func IsLikelyVisionModel(model string) bool {
 		return true
 	}
 	tokens := strings.FieldsFunc(lower, modelTokenSeparator)
-	for _, token := range tokens {
-		if token == "audio" {
-			return false
-		}
+	if slices.Contains(tokens, "audio") {
+		return false
 	}
 	if strings.HasPrefix(lower, "gpt-4o") {
 		return true
@@ -66,16 +67,43 @@ func EffectiveVision(e *ProviderEntry) bool {
 	if e == nil {
 		return false
 	}
-	if e.visionOverride != nil {
-		return *e.visionOverride
+	if enabled, explicit := explicitModelVision(e); explicit {
+		return enabled
+	}
+	// DeepSeek's official APIs currently accept text message content only. Treat
+	// current official models as text-only when only the legacy provider-wide
+	// vision flag is set, so stale configs cannot make requests 400. A concrete
+	// model can still opt in through vision_models or a model override when
+	// DeepSeek documents a future multimodal request shape.
+	if openai.IsDeepSeek(e.BaseURL) {
+		return false
 	}
 	if e.Vision {
 		return true
 	}
-	if e.HasVisionModel(e.Model) {
-		return true
-	}
 	return isOfficialMimoVisionEntry(e)
+}
+
+// ExplicitModelVision reports whether the selected model has a positive,
+// model-scoped image capability declaration. Provider assembly uses this
+// provenance to distinguish a deliberate future-model opt-in from a stale
+// provider-wide vision=true setting.
+func ExplicitModelVision(e *ProviderEntry) bool {
+	enabled, explicit := explicitModelVision(e)
+	return explicit && enabled
+}
+
+func explicitModelVision(e *ProviderEntry) (enabled, explicit bool) {
+	if e == nil {
+		return false, false
+	}
+	if e.visionOverride != nil {
+		return *e.visionOverride, true
+	}
+	if e.HasVisionModel(e.Model) {
+		return true, true
+	}
+	return false, false
 }
 
 func (e *ProviderEntry) HasVisionModel(model string) bool {

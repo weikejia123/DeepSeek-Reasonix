@@ -3,6 +3,8 @@ package main
 import (
 	"reflect"
 	"testing"
+
+	"reasonix/internal/ablation"
 )
 
 func TestAppendBenchmarkProfileArgsBaselineIsByteIdentical(t *testing.T) {
@@ -21,16 +23,80 @@ func TestAppendBenchmarkProfileArgsDeliveryUsesRealRuntimeProfile(t *testing.T) 
 	}
 }
 
+func TestBuildRunTaskArgsEnablesUnattendedWorkspaceWrites(t *testing.T) {
+	cfg := suiteConfig{model: "e2e", profile: benchmarkProfileDelivery}
+	got := buildRunTaskArgs(cfg, "metrics.json", "run.trajectory.jsonl", 12, "fix it")
+	want := []string{
+		"run", "--auto", "--metrics", "metrics.json",
+		"--trajectory", "run.trajectory.jsonl",
+		"--model", "e2e", "--max-steps", "12",
+		"--profile", "delivery", "fix it",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("run task args = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRunTaskArgsPassesTheAblationArmThrough(t *testing.T) {
+	cfg := suiteConfig{profile: benchmarkProfileBaseline, arm: ablation.New(ablation.Evidence, ablation.Planner)}
+	got := buildRunTaskArgs(cfg, "m.json", "", 0, "fix it")
+	want := []string{"run", "--auto", "--metrics", "m.json", "--ablate", "evidence,planner", "fix it"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ablated args = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRunTaskArgsPassesEffortThrough(t *testing.T) {
+	cfg := suiteConfig{profile: benchmarkProfileEconomy, effort: "low"}
+	got := buildRunTaskArgs(cfg, "m.json", "", 0, "fix it")
+	want := []string{"run", "--auto", "--metrics", "m.json", "--profile", "economy", "--effort", "low", "fix it"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("effort args = %v, want %v", got, want)
+	}
+}
+
+func TestDefaultSuiteBudgetCoversCurrentFiveTaskBaseline(t *testing.T) {
+	// The real-provider baseline exceeded 400k after only three successful
+	// tasks. Keep enough headroom to grade all five instead of silently skipping
+	// the final scenarios as normal model and cache usage varies.
+	if defaultSuiteTokenBudget < 800_000 {
+		t.Fatalf("default suite token budget = %d, want at least 800000", defaultSuiteTokenBudget)
+	}
+}
+
 func TestNormalizeBenchmarkProfile(t *testing.T) {
 	for _, input := range []string{"", "baseline", " BASELINE "} {
 		if got, err := normalizeBenchmarkProfile(input); err != nil || got != benchmarkProfileBaseline {
 			t.Fatalf("normalize(%q) = %q, %v", input, got, err)
 		}
 	}
-	if got, err := normalizeBenchmarkProfile("delivery"); err != nil || got != benchmarkProfileDelivery {
-		t.Fatalf("normalize(delivery) = %q, %v", got, err)
+	for _, tier := range []string{"economy", "balanced", "delivery"} {
+		if got, err := normalizeBenchmarkProfile(tier); err != nil || got != tier {
+			t.Fatalf("normalize(%q) = %q, %v", tier, got, err)
+		}
 	}
 	if _, err := normalizeBenchmarkProfile("fast"); err == nil {
 		t.Fatal("unknown profile should fail")
+	}
+}
+
+func TestNormalizeCacheArm(t *testing.T) {
+	for input, want := range map[string]string{"": "cold", "cold": "cold", " WARM ": "warm"} {
+		if got, err := normalizeCacheArm(input); err != nil || got != want {
+			t.Fatalf("normalizeCacheArm(%q) = %q, %v", input, got, err)
+		}
+	}
+	if _, err := normalizeCacheArm("hot"); err == nil {
+		t.Fatal("unknown cache arm should fail")
+	}
+}
+
+func TestAppendBenchmarkProfileArgsPassesToolSurfaceTiers(t *testing.T) {
+	for _, tier := range []string{"economy", "balanced"} {
+		got := appendBenchmarkProfileArgs([]string{"run"}, tier)
+		want := []string{"run", "--profile", tier}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s args = %v, want %v", tier, got, want)
+		}
 	}
 }

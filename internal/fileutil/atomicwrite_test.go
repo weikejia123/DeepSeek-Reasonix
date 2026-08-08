@@ -145,6 +145,33 @@ func TestReplaceFileCrossDeviceCopiesImmediately(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteFileStrictCrossDeviceKeepsExistingDestination(t *testing.T) {
+	oldRename := renameFile
+	renameFile = func(oldpath, newpath string) error {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EXDEV}
+	}
+	t.Cleanup(func() { renameFile = oldRename })
+
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "current.json")
+	if err := os.WriteFile(dest, []byte("old-pointer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteFileStrict(dest, []byte("new-pointer"), 0o644); err == nil {
+		t.Fatal("strict atomic write accepted a cross-device rename")
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != "old-pointer" {
+		t.Fatalf("destination changed after strict replace failure: %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "current.json" {
+		t.Fatalf("strict write left temporary files: %v", entries)
+	}
+}
+
 func TestCopyOntoOverwritesAndPreservesMode(t *testing.T) {
 	dir := t.TempDir()
 	tmp := filepath.Join(dir, "x.tmp")
@@ -241,5 +268,61 @@ func TestAtomicCreateFilePublishesCompleteContent(t *testing.T) {
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "confirmed" {
 		t.Fatalf("created target = %q, %v", got, err)
+	}
+}
+
+func TestAtomicOverwriteFileKeepsExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not carry a POSIX executable bit")
+	}
+	path := filepath.Join(t.TempDir(), "build.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nold\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicOverwriteFile(path, []byte("#!/bin/sh\nnew\n"), 0o644); err != nil {
+		t.Fatalf("AtomicOverwriteFile: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o755 {
+		t.Fatalf("perm = %o, want 755 — the script lost its executable bit", perm)
+	}
+}
+
+func TestAtomicOverwriteFileWritesThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	link := filepath.Join(dir, "link.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := AtomicOverwriteFile(link, []byte("new"), 0o644); err != nil {
+		t.Fatalf("AtomicOverwriteFile: %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced by a regular file: mode=%v err=%v", info.Mode(), err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "new" {
+		t.Fatalf("target content = %q, %v — the write did not reach the link target", got, err)
+	}
+}
+
+func TestAtomicOverwriteFileUsesDefaultPermForNewFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh.txt")
+	if err := AtomicOverwriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
+		t.Fatalf("perm = %o, want 600", perm)
 	}
 }

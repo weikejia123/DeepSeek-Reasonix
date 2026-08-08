@@ -120,29 +120,61 @@ cp "$installer" "$dist_installer"
 
 portable_staging=$(mktemp -d)
 cleanup() {
+	tmp_root="${TMPDIR:-/tmp}"
+	tmp_root="${tmp_root%/}"
 	case "$portable_staging" in
-	"${TMPDIR:-/tmp}"/* | /tmp/*) rm -rf -- "$portable_staging" ;;
+	"$tmp_root"/* | /tmp/*) rm -rf -- "$portable_staging" ;;
 	*) echo "refusing to clean unexpected portable staging directory: $portable_staging" >&2 ;;
 	esac
 }
 trap cleanup EXIT
 
-cp "$PAYLOAD/$BINNAME.exe" "$portable_staging/$BINNAME.exe"
-cp "$PAYLOAD/$GUARDNAME.exe" "$portable_staging/$GUARDNAME.exe"
+# versioned-v1 portable layout (no Guard, no flat desktop at InstallRoot).
+version_label="${VERSION:-}"
+if [ -z "$version_label" ] && [ -f "$DESKTOP/wails.json" ]; then
+	version_label=$(node -e 'const j=require(process.argv[1]); process.stdout.write(j.info&&j.info.productVersion||"")' "$DESKTOP/wails.json" 2>/dev/null || true)
+fi
+version_label="${version_label:-0.0.0}"
+case "$version_label" in
+v*) ;;
+*) version_label="v${version_label}" ;;
+esac
+mkdir -p "$portable_staging/versions/$version_label"
+cp "$PAYLOAD/$BINNAME.exe" "$portable_staging/versions/$version_label/$BINNAME.exe"
+cp "$PAYLOAD/$UPDATE_HELPER" "$portable_staging/versions/$version_label/$UPDATE_HELPER"
+cp "$PAYLOAD/$WINDOWS_CLINAME.exe" "$portable_staging/versions/$version_label/$WINDOWS_CLINAME.exe"
 cp "$PAYLOAD/$LAUNCHERNAME.exe" "$portable_staging/$LAUNCHERNAME.exe"
 cp "$PAYLOAD/$LAUNCHERNAME.exe" "$portable_staging/$APPNAME.exe"
-cp "$PAYLOAD/$UPDATE_HELPER" "$portable_staging/$UPDATE_HELPER"
 cp "$PAYLOAD/$WINDOWS_CLINAME.exe" "$portable_staging/$WINDOWS_CLINAME.exe"
+cat >"$portable_staging/current.json" <<EOF
+{
+  "schemaVersion": 1,
+  "activeVersion": "$version_label",
+  "activeDir": "versions/$version_label"
+}
+EOF
 "$ROOT/scripts/verify-windows-portable.sh" "$portable_staging"
 
-portable_staging_win="$portable_staging"
-dist_portable_win="$dist_portable"
-if command -v cygpath >/dev/null 2>&1; then
-	portable_staging_win="$(cygpath -w "$portable_staging")"
-	dist_portable_win="$(cygpath -w "$dist_portable")"
+if command -v powershell.exe >/dev/null 2>&1; then
+	portable_staging_win="$portable_staging"
+	dist_portable_win="$dist_portable"
+	if command -v cygpath >/dev/null 2>&1; then
+		portable_staging_win="$(cygpath -w "$portable_staging")"
+		dist_portable_win="$(cygpath -w "$dist_portable")"
+	fi
+	powershell.exe -NoProfile -Command \
+		"Compress-Archive -Force -Path '$portable_staging_win\\*' -DestinationPath '$dist_portable_win'"
+elif command -v zip >/dev/null 2>&1; then
+	# macOS/Linux cross-builds do not ship powershell.exe; the portable layout
+	# is ordinary ZIP data, so use the host zip utility in that case.
+	(
+		cd "$portable_staging"
+		zip -q -r "$dist_portable" .
+	)
+else
+	echo "neither powershell.exe nor zip is available to create the Windows portable archive" >&2
+	exit 1
 fi
-powershell.exe -NoProfile -Command \
-	"Compress-Archive -Force -Path '$portable_staging_win\\*' -DestinationPath '$dist_portable_win'"
 
 # The second SignPath request signs the outer installer only after verifying
 # these already-signed payload files. Keeping one flat, exact bundle makes the

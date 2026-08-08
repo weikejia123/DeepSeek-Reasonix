@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,10 +76,14 @@ servers, then inspect or call a non-destructive capability. If a capability is
 destructive, do not treat that as missing configuration or an unavailable MCP:
 write the operation into the plan for the executor instead.
 
-If your research shows the task needs no changes and no actions at all (already
-implemented, already resolved), explain that briefly and end your reply with a
-final line containing exactly [no_changes]. Never emit that marker when any
-work, verification, or follow-up remains.`
+If the task needs no executor actions at all, end your reply with a final line
+containing exactly [no_changes]. That covers two cases: your research shows the
+work is already done (already implemented, already resolved — explain that
+briefly), and the task is a question, comparison, analysis, or explanation that
+your reply itself fully answers — write the complete answer, then the marker.
+The host then delivers your reply directly instead of starting the executor.
+Never emit that marker when any workspace change, command, verification, or
+follow-up action remains.`
 
 const executorHandoffMarker = "Reasonix executor handoff"
 
@@ -119,14 +124,15 @@ func PlannerPromptWithContext(context string) string {
 // executor (a full tool-using Agent) carries it out. The sessions never mix, so
 // neither model's prefix is disturbed by the other's turns.
 type Coordinator struct {
-	planner        provider.Provider
-	plannerSess    *Session
-	plannerSystem  string
-	plannerPricing *provider.Pricing
-	plannerAgent   *Agent
-	executor       *Agent
-	temperature    float64
-	sink           event.Sink
+	planner         provider.Provider
+	plannerSess     *Session
+	plannerSystem   string
+	plannerPricing  *provider.Pricing
+	plannerModelRef string
+	plannerAgent    *Agent
+	executor        *Agent
+	temperature     float64
+	sink            event.Sink
 	// plannerPolicy chooses executor-only, plan-and-execute, or plan-for-approval
 	// per turn. nil preserves the historical "plan every turn" constructor
 	// behavior used by direct Coordinator callers.
@@ -178,15 +184,16 @@ func newCoordinator(planner provider.Provider, plannerSession *Session, plannerP
 		executor.executorHandoffGuard = true
 	}
 	return &Coordinator{
-		planner:        planner,
-		plannerSess:    plannerSession,
-		plannerSystem:  plannerSystem,
-		plannerPricing: plannerPricing,
-		plannerAgent:   plannerAgent,
-		executor:       executor,
-		temperature:    temperature,
-		sink:           sink,
-		plannerPolicy:  policy,
+		planner:         planner,
+		plannerSess:     plannerSession,
+		plannerSystem:   plannerSystem,
+		plannerPricing:  plannerPricing,
+		plannerModelRef: strings.TrimSpace(plannerOptions.ModelRef),
+		plannerAgent:    plannerAgent,
+		executor:        executor,
+		temperature:     temperature,
+		sink:            sink,
+		plannerPolicy:   policy,
 	}
 }
 
@@ -400,8 +407,9 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 	if isNoOpPlan(plan) {
 		c.persistExecutorNoOp(ctx, input, plan)
 		// The relayed conclusion is planner text; keep its source so sinks
-		// attribute it like every other planner emission.
-		c.sink.Emit(event.Event{Kind: event.Text, Text: plan, Source: event.UsageSourcePlanner})
+		// attribute it like every other planner emission. Display goes through
+		// the standard filter so the [no_changes] contract line stays internal.
+		c.sink.Emit(event.Event{Kind: event.Text, Text: DisplayAssistantText(plan), Source: event.UsageSourcePlanner})
 		return nil
 	}
 	runExecutorWithPlan := func(ctx context.Context, planText string) error {
@@ -514,17 +522,17 @@ func plannerPlanRequestsApproval(plan string) bool {
 	}
 	// Match per line so a nearby negation ("无需等待用户批准", "no need to wait
 	// for approval") exempts only its own phrase, not the whole plan.
-	for _, rawLine := range strings.Split(lower, "\n") {
+	for rawLine := range strings.SplitSeq(lower, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
 		}
 		for _, phrase := range plannerApprovalPhrases {
-			idx := strings.Index(line, phrase)
-			if idx < 0 {
+			before, _, ok := strings.Cut(line, phrase)
+			if !ok {
 				continue
 			}
-			if approvalMentionNegated(line[:idx]) {
+			if approvalMentionNegated(before) {
 				continue
 			}
 			return true
@@ -626,7 +634,7 @@ func parsePlannerAskBlock(plan string) (event.AskQuestion, bool) {
 	block := plan[start+len(plannerAskStartMarker) : end]
 	var question string
 	var options []event.AskOption
-	for _, raw := range strings.Split(block, "\n") {
+	for raw := range strings.SplitSeq(block, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -664,8 +672,8 @@ func parsePlannerAskBlock(plan string) (event.AskQuestion, bool) {
 
 func plannerQuestionPrompt(plan string) string {
 	lines := strings.Split(plan, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(strings.Trim(lines[i], "-* \t"))
+	for _, v := range slices.Backward(lines) {
+		line := strings.TrimSpace(strings.Trim(v, "-* \t"))
 		if line == "" {
 			continue
 		}
@@ -773,8 +781,8 @@ func isNoOpPlan(plan string) bool {
 
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(s, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if t := strings.TrimSpace(lines[i]); t != "" {
+	for _, v := range slices.Backward(lines) {
+		if t := strings.TrimSpace(v); t != "" {
 			return t
 		}
 	}
@@ -815,8 +823,20 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 		rawContent = rawInput
 	}
 	c.plannerSess.Add(provider.Message{Role: provider.RoleUser, Content: input, RawContent: rawContent})
+	ctx = provider.WithRequestAttemptCounter(ctx)
+	var usage *provider.Usage
+	streamCompleted := false
+	defer func() {
+		accounted := provider.UsageWithRequestAttemptCount(ctx, usage)
+		if accounted != nil || streamCompleted {
+			c.sink.Emit(event.Event{Kind: event.Usage, ModelRef: c.plannerModelRef, Usage: accounted, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
+		}
+	}()
 
-	ch, err := c.planner.Stream(ctx, provider.Request{
+	planCtx, planCancel := context.WithCancel(ctx)
+	defer planCancel()
+	defer trackPublishedHostStream(planCtx, planCancel)()
+	ch, err := c.planner.Stream(planCtx, provider.Request{
 		Messages:    provider.ModelMessages(c.plannerSess.Messages),
 		Temperature: provider.OptionalTemperature(c.temperature),
 	})
@@ -826,7 +846,6 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 	}
 
 	var text strings.Builder
-	var usage *provider.Usage
 	for chunk := range ch {
 		switch chunk.Type {
 		case provider.ChunkText:
@@ -839,10 +858,7 @@ func (c *Coordinator) plan(ctx context.Context, input string) (string, error) {
 			return "", chunk.Err
 		}
 	}
-	// Closes the planner's raw text block (no markdown redraw) and prints its
-	// usage line, mirroring the old Fprintln + printUsage tail.
-	c.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: c.plannerPricing, Source: event.UsageSourcePlanner, UsageSource: event.UsageSourcePlanner})
-
+	streamCompleted = true
 	plan := text.String()
 	c.plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: plan})
 	return plan, nil
@@ -887,34 +903,6 @@ func (c *Coordinator) planWithTools(ctx context.Context, input string) (string, 
 	// does not leave the planner session ending in a user message.
 	c.rollbackPlannerTurn(before, rewriteBefore)
 	return "", fmt.Errorf("planner finished without producing a plan")
-}
-
-// rollbackPlannerTurn discards a failed planning turn from the planner session.
-// Without a mid-turn rewrite the pre-turn snapshot is restored exactly. When
-// auto-compaction rewrote the log during the turn, restoring the snapshot would
-// also revert the compaction — wasting its summarizer call and re-growing the
-// prompt the fold just paid to shrink — so only the trailing plain user
-// messages are dropped (the dangling turn input plus any steer/nudge messages):
-// those are what would produce consecutive user roles on the next plan, while
-// completed tool rounds and the compaction digest stay coherent history.
-func (c *Coordinator) rollbackPlannerTurn(before []provider.Message, rewriteBefore int) {
-	if c.plannerSess.RewriteVersion() == rewriteBefore {
-		c.plannerSess.Replace(before)
-		return
-	}
-	msgs := c.plannerSess.Snapshot()
-	for len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if last.Role == provider.RoleAssistant && len(last.ToolCalls) > 0 {
-			msgs = msgs[:len(msgs)-1]
-			continue
-		}
-		if last.Role != provider.RoleUser || isCompactionSummary(last) {
-			break
-		}
-		msgs = msgs[:len(msgs)-1]
-	}
-	c.plannerSess.Replace(msgs)
 }
 
 func plannerResearchPauseDetail(err error) string {
@@ -1064,11 +1052,11 @@ func HandoffTask(s string) string {
 		return s
 	}
 	const header = "Original task:\n"
-	i := strings.Index(trimmed, header)
-	if i < 0 {
+	_, after, ok := strings.Cut(trimmed, header)
+	if !ok {
 		return s
 	}
-	rest := trimmed[i+len(header):]
+	rest := after
 	if j := strings.Index(rest, "\n\nPlanner output:"); j >= 0 {
 		rest = rest[:j]
 	}

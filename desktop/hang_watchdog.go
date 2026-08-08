@@ -24,10 +24,7 @@ var (
 )
 
 func recordMainThreadHeartbeat(t time.Time) {
-	elapsed := t.Sub(mainThreadClockBase)
-	if elapsed < 0 {
-		elapsed = 0
-	}
+	elapsed := max(t.Sub(mainThreadClockBase), 0)
 	mainThreadLastHeartbeatElapsed.Store(int64(elapsed))
 	mainThreadLastHeartbeatWall.Store(t.UnixNano())
 }
@@ -38,11 +35,19 @@ func mainThreadHeartbeatAge(now time.Time) (time.Duration, time.Time, bool) {
 	if lastWall <= 0 {
 		return 0, time.Time{}, false
 	}
-	age := now.Sub(mainThreadClockBase) - lastElapsed
-	if age < 0 {
-		age = 0
-	}
+	age := max(now.Sub(mainThreadClockBase)-lastElapsed, 0)
 	return age, time.Unix(0, lastWall), true
+}
+
+func resetMainThreadHeartbeatAfterSleep(lastCheck, now time.Time) bool {
+	if now.Sub(lastCheck) <= mainThreadSleepSkip {
+		return false
+	}
+	// The native UI heartbeat and this Go ticker are both suspended while the
+	// machine sleeps. Treat wake as a fresh observation epoch so the sleep gap
+	// cannot be reported as a multi-minute UI-thread hang on the next tick.
+	recordMainThreadHeartbeat(now)
+	return true
 }
 
 func (a *App) startMainThreadWatchdog() {
@@ -89,7 +94,7 @@ func (a *App) watchMainThreadHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			if now.Sub(lastCheck) > mainThreadSleepSkip {
+			if resetMainThreadHeartbeatAfterSleep(lastCheck, now) {
 				lastCheck = now
 				continue
 			}

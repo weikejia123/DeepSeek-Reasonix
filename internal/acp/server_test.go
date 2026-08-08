@@ -25,7 +25,7 @@ import (
 	"reasonix/internal/tool"
 )
 
-// --- fakes: a Factory wrapping a behavior-driven runner in a real Controller ---
+// fakes: a Factory wrapping a behavior-driven runner in a real Controller
 
 // fakeRunner stands in for an agent.Runner; it emits to the session's sink and
 // honors ctx cancellation, but runs no model.
@@ -297,7 +297,7 @@ func (f *configurableFactory) hookEventsSnapshot() []hook.Event {
 	return append([]hook.Event(nil), f.hookEvents...)
 }
 
-// --- a minimal JSON-RPC client over the wire, for integration tests ---
+// a minimal JSON-RPC client over the wire, for integration tests
 
 type frame struct {
 	ID     *json.RawMessage `json:"id"`
@@ -584,7 +584,7 @@ func messageChunkText(t *testing.T, f frame) (string, bool) {
 	return p.Update.Content.Text, true
 }
 
-// --- tests ---
+// tests
 
 func TestServeLifecycle(t *testing.T) {
 	factory := &fakeFactory{behavior: func(_ context.Context, sink event.Sink, input string) error {
@@ -627,6 +627,12 @@ func TestServeLifecycle(t *testing.T) {
 	steer := extensions.AgentCapabilities.Meta["reasonix.io"].SessionSteer
 	if steer == nil || steer.Method != sessionSteerMethod {
 		t.Errorf("sessionSteer capability = %+v, want method %q", steer, sessionSteerMethod)
+	}
+	for _, method := range []string{sessionStatusMethod, sessionStatusUpdateMethod} {
+		capability, ok := ir.AgentCapabilities.Meta[method].(map[string]any)
+		if !ok || capability["schemaVersion"] != float64(reasonixStatusSchemaVersion) {
+			t.Errorf("%s capability = %#v, want schemaVersion %d", method, ir.AgentCapabilities.Meta[method], reasonixStatusSchemaVersion)
+		}
 	}
 	if len(ir.AuthMethods) != 1 || ir.AuthMethods[0].ID != "reasonix-setup" || ir.AuthMethods[0].Type != "terminal" {
 		t.Fatalf("authMethods = %+v, want terminal reasonix setup", ir.AuthMethods)

@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +84,16 @@ func TestApplyHeadlessApprovalModeAutoAllowsWriterFallback(t *testing.T) {
 	}
 	if len(written) != 1 || written[0] != "a.txt" {
 		t.Fatalf("executed writes = %v, want a.txt (auto auto-approves the writer fallback)", written)
+	}
+}
+
+func TestApplyHeadlessApprovalModeAskDeniesWriterFallback(t *testing.T) {
+	prompts, written := runHeadlessWriteOnce(t, ToolApprovalAsk, nil)
+	if prompts != 0 {
+		t.Fatalf("approval prompts = %d, want 0 (headless run has no UI to answer)", prompts)
+	}
+	if len(written) != 0 {
+		t.Fatalf("executed writes = %v, want none (default headless ask must fail closed)", written)
 	}
 }
 
@@ -197,8 +209,8 @@ func TestApplyHeadlessApprovalModeAllowsOnlyLowRiskProjectMemoryCreate(t *testin
 // construction point for every headless-only sub-agent gate (task,
 // writer-capable skill runners, the planner) to the identical mode contract
 // ApplyHeadlessApprovalMode installs on the parent executor. Before this fix,
-// boot always built the mode-unaware default gate (nil approver, ask resolves
-// to allow) for those surfaces regardless of the CLI-selected headless
+// boot always built the mode-unaware default gate for those surfaces
+// regardless of the CLI-selected headless
 // approval mode, so a task sub-agent could run a write_file call an explicit
 // ask rule was supposed to deny under auto. runSubagentGateWriteOnce drives a
 // write_file tool call through a gate exactly the way TaskTool.runSubSession
@@ -244,8 +256,8 @@ func TestBuildHeadlessApprovalGateMatchesParentExecutorContract(t *testing.T) {
 // counterpart of the boot.Build sub-agent gate fix: a runtime mode switch
 // (Shift+Tab -> SetToolApprovalMode) must reach sub-agents too, not just
 // refreshInteractiveGate's parent executor gate. Before this fix, boot
-// captured the sub-agent gate once at construction (mode-unaware default:
-// ask resolves to allow) and SetToolApprovalMode never touched it, so a task
+// captured the sub-agent gate once at construction (mode-unaware default)
+// and SetToolApprovalMode never touched it, so a task
 // sub-agent stayed on the boot-time default even after the user switched to
 // auto. subagentGate here stands in for what a task/skill/planner sub-agent
 // actually reads (boot wires the same *SharedHeadlessGate into all of them).
@@ -279,11 +291,10 @@ func TestSetToolApprovalModePropagatesToSubagentGate(t *testing.T) {
 		return append([]string(nil), writer.paths...)
 	}
 
-	// Fresh sub-agent gate at the default Ask posture: no UI to prompt
-	// through, so the explicit ask rule resolves to allow — the existing,
-	// intentional headless contract for a never-switched session.
-	if got := runSubagentWriteOnce(t); len(got) != 1 || got[0] != "a.txt" {
-		t.Fatalf("ask (initial): executed writes = %v, want [a.txt]", got)
+	// Fresh sub-agent gate at the default Ask posture: no UI can answer, so an
+	// explicit ask rule must fail closed instead of granting itself.
+	if got := runSubagentWriteOnce(t); len(got) != 0 {
+		t.Fatalf("ask (initial): executed writes = %v, want none", got)
 	}
 
 	c.SetToolApprovalMode(ToolApprovalAuto)
@@ -315,5 +326,35 @@ func TestInteractiveGateIgnoresSessionAllowForFreshHumanTools(t *testing.T) {
 	// An ordinary tool in the allowlist is still honored.
 	if got := gate.Policy.DecideSubject("write_file", false, ""); got != permission.Allow {
 		t.Fatalf("write_file decision = %v, want Allow (SessionAllow still applies to ordinary tools)", got)
+	}
+}
+
+// A blocked inline interpreter must tell a headless agent what it CAN do in
+// this session. The old message only offered "interactive session or YOLO
+// mode", which a non-interactive run cannot act on — benchmark agents burned
+// dozens of calls retrying python -c variants before stumbling onto the
+// script-file workaround on their own.
+func TestHeadlessAutoDynamicShellBlockNamesTheAuditableWorkaround(t *testing.T) {
+	gate := BuildHeadlessApprovalGate(permission.New("ask", nil, nil, nil), ToolApprovalAuto)
+
+	allow, reason, err := gate.Check(context.Background(), "bash",
+		json.RawMessage(`{"command":"cd /testbed && python -c \"print(1)\""}`), false)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if allow {
+		t.Fatal("python -c must stay blocked in headless auto (inline code is not auditable)")
+	}
+	for _, want := range []string{"write_file", "python repro.py", "read_file"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("block reason must name the in-session workaround %q: %s", want, reason)
+		}
+	}
+
+	// The workaround the message advertises must actually pass the same gate.
+	allow, reason, err = gate.Check(context.Background(), "bash",
+		json.RawMessage(`{"command":"cd /testbed && python repro.py"}`), false)
+	if err != nil || !allow {
+		t.Fatalf("script-file execution must be allowed in auto: allow=%v reason=%q err=%v", allow, reason, err)
 	}
 }

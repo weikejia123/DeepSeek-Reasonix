@@ -1,11 +1,12 @@
 import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
+import type { ControllerLiveStore, ExtensionItem, Item, LiveStream } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
 import { useT } from "../lib/i18n";
 import { AssistantMessage, InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
 import { ProcessBrainIcon, ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
+import { ExtensionCard } from "./ExtensionCard";
 import { ArrowDown, ChevronRight, CirclePlay, Info, TriangleAlert } from "lucide-react";
 import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
@@ -18,8 +19,10 @@ import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
 import { buildTurnGroups, compactQuestionText, createWarmLayerState, lastQuestionTurn, questionAnchorId, questionTurnsById, scrollVersion, warmColdPageForTurn, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
 import { appendTurnActionCopyText } from "../lib/turnActionCopy";
-import { displayReasoningText } from "../lib/reasoningDisplay";
+import { displayReasoningText, STREAMING_REASONING_WINDOW_STEP_CHARS, STREAMING_REASONING_WINDOW_STEP_LINES } from "../lib/reasoningDisplay";
 import { observeScrollContentSize } from "../lib/scrollContentObserver";
+import { Markdown } from "./Markdown";
+import { ReasoningSummary } from "./ReasoningSummary";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -33,7 +36,7 @@ type AssistantReasoningDisplay = "normal" | "hide";
 const LiveAssistantMessage = memo(function LiveAssistantMessage({
   item,
   defaultExpanded = false,
-  expandWhileStreaming = true,
+  expandWhileStreaming = false,
   truncateStreamingReasoning = false,
   creationMode = false,
   reasoningDisplay = "normal",
@@ -80,26 +83,20 @@ const LiveAssistantMessage = memo(function LiveAssistantMessage({
   );
 });
 
-function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
+function InlineAssistantReasoning({ item, active }: { item: AssistantItem; active: boolean }) {
   const t = useT();
   const live = useContext(LiveStreamContext);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   useGSAPCollapse(bodyRef, open);
-  const shown = live && live.id === item.id
-    ? {
-        reasoning: live.reasoning,
-        streaming: true,
-        reasoningComplete: live.reasoningComplete,
-      }
-    : item;
-  const reasoning = shown.reasoning.trim();
+  const shown = live && live.id === item.id ? { reasoning: live.reasoning, streaming: true, reasoningComplete: live.reasoningComplete } : item;
+  const reasoning = shown.reasoning.trim(); const running = shown.streaming && !shown.reasoningComplete;
   if (!reasoning) return null;
-  const visibleReasoning = displayReasoningText(shown.reasoning, {
-    streaming: shown.streaming,
-    truncateStreaming: true,
-  });
-  const running = shown.streaming && !shown.reasoningComplete;
+  // Mount the full Markdown only when the segment is expanded and the outer fold is open.
+  const visibleReasoning = active && open ? displayReasoningText(shown.reasoning, {
+    streaming: running,
+    truncateStreaming: true, stableWindowChars: STREAMING_REASONING_WINDOW_STEP_CHARS, stableWindowLines: STREAMING_REASONING_WINDOW_STEP_LINES,
+  }) : "";
   return (
     <div className={`turn-collapse__reasoning-phase${open ? " turn-collapse__reasoning-phase--open" : ""}`}>
       <button
@@ -113,7 +110,11 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
         <span>{running ? t("msg.thinkingRunning") : t("msg.thinking")}</span>
         <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
       </button>
-      <div ref={bodyRef} className="turn-collapse__inline-reasoning">{visibleReasoning}</div>
+      {open ? (
+        <div ref={bodyRef} className="turn-collapse__inline-reasoning">
+          {active ? <Markdown text={visibleReasoning} streaming={running} /> : <ReasoningSummary text={shown.reasoning} streaming={running} />}
+        </div>
+      ) : <ReasoningSummary text={shown.reasoning} streaming={running} onOpen={() => setOpen(true)} />}
     </div>
   );
 }
@@ -193,7 +194,7 @@ function assistantHasVisibleAnswer(item: AssistantItem, liveId: string | undefin
 
 type TurnDisplayParts = {
   processItems: Item[];
-  outsideItems: Array<NoticeItem | AssistantItem>;
+  outsideItems: Array<NoticeItem | AssistantItem | ExtensionItem>;
 };
 
 // Splits a turn by channel, not by position: reasoning, tools, phases, info
@@ -239,6 +240,13 @@ function partitionTurnItems(
       } else {
         pushProcess(item);
       }
+      continue;
+    }
+    if (item.kind === "extension") {
+      // Extension cards carry their own actions and progress — keep them
+      // visible like warnings instead of folding them into the process
+      // collapse, but never treat them as a conversational boundary.
+      current.outsideItems.push(item);
       continue;
     }
     if (item.kind !== "assistant") {
@@ -824,6 +832,10 @@ export const Transcript = memo(function Transcript({
           );
         }
         for (const item of segment.outsideItems) {
+          if (item.kind === "extension") {
+            out.push(<ExtensionCard key={item.id} item={item} tabId={tabId} />);
+            continue;
+          }
           if (item.kind === "notice") {
             if (isSteerNoticeText(item.text)) {
               out.push(<SteerCard key={item.id} text={item.text} />);
@@ -1223,6 +1235,10 @@ function WarmTurnItems({
       );
     }
     for (const item of segment.outsideItems) {
+      if (item.kind === "extension") {
+        nodes.push(<ExtensionCard key={item.id} item={item} tabId={tabId} />);
+        continue;
+      }
       if (item.kind === "notice") {
         if (isSteerNoticeText(item.text)) {
           nodes.push(<SteerCard key={item.id} text={item.text} />);
@@ -1513,7 +1529,7 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
       case "assistant":
         // Answer text renders outside the fold (partitionTurnItems strips it),
         // so the fold only ever shows the reasoning segment.
-        body.push(<InlineAssistantReasoning key={`${it.id}-reasoning`} item={it as AssistantItem} />);
+        body.push(<InlineAssistantReasoning key={`${it.id}-reasoning`} item={it as AssistantItem} active={open} />);
         break;
     }
   }
@@ -1698,6 +1714,42 @@ function SteerCard({ text }: { text: string }) {
   );
 }
 
+function DecisionReceiptLine({ receipt }: { receipt: NonNullable<NoticeItem["decisionReceipt"]> }) {
+  const t = useT();
+  const titleKey = receipt.kind === "ask"
+    ? "notice.decisionReceiptAsk"
+    : receipt.kind === "plan"
+    ? "notice.decisionReceiptPlan"
+    : receipt.kind === "recovery"
+      ? "notice.decisionReceiptRecovery"
+      : "notice.decisionReceiptTool";
+  const outcomeKeys: Record<string, string> = {
+    allow_once: "notice.decisionAllowOnce",
+    allow_session: "notice.decisionAllowSession",
+    allow_persistent: "notice.decisionAllowPersistent",
+    deny: "notice.decisionDeny",
+    start_execution: "notice.decisionStartExecution",
+    revise_plan: "notice.decisionRevisePlan",
+    exit_plan: "notice.decisionExitPlan",
+    recovery_continue: "notice.decisionRecoveryContinue",
+    recovery_continue_task: "notice.decisionRecoveryContinueTask",
+    recovery_revise: "notice.decisionRecoveryRevise",
+    answered: "notice.decisionAnswered",
+  };
+  const outcome = outcomeKeys[receipt.outcome]
+    ? t(outcomeKeys[receipt.outcome] as never)
+    : receipt.outcome || t("notice.decisionReceiptTitle");
+  const showOutcome = receipt.kind !== "ask" || receipt.outcome !== "answered";
+  return (
+    <div className="notice-line__decision-receipt">
+      <span className="notice-line__decision-title">{t(titleKey as never)}</span>
+      {showOutcome && <span className="notice-line__decision-outcome">{outcome}</span>}
+      {receipt.tool && <code>{receipt.tool}</code>}
+      {receipt.subject && <span className="notice-line__decision-subject">{receipt.subject}</span>}
+    </div>
+  );
+}
+
 export function NoticeCard({ item, onAction, actionDisabled = false }: { item: NoticeItem; onAction?: () => void; actionDisabled?: boolean }) {
   const t = useT();
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
@@ -1705,8 +1757,14 @@ export function NoticeCard({ item, onAction, actionDisabled = false }: { item: N
     <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance="true">
       <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
       <div className="notice-line__text">
-        {item.title ? <div className="notice-line__title">{item.title}</div> : null}
-        <div className="notice-line__body">{item.text}</div>
+        {item.decisionReceipt ? (
+          <DecisionReceiptLine receipt={item.decisionReceipt} />
+        ) : (
+          <>
+            {item.title ? <div className="notice-line__title">{item.title}</div> : null}
+            <div className="notice-line__body">{item.text}</div>
+          </>
+        )}
         {item.action && onAction ? (
           <div className="notice-line__actions">
             <button className="btn btn--small" type="button" onClick={onAction} disabled={actionDisabled}>

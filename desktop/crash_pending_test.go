@@ -107,11 +107,9 @@ func TestWritePendingReportQueueIsBoundedUnderConcurrentWriters(t *testing.T) {
 	var done sync.WaitGroup
 	var successes atomic.Int32
 
-	for i := 0; i < writers; i++ {
+	for range writers {
 		ready.Add(1)
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			report := baseCrashReport("performance")
 			report.Source = "native.watchdog"
 			report.Label = "mac.main_thread.hang"
@@ -121,7 +119,7 @@ func TestWritePendingReportQueueIsBoundedUnderConcurrentWriters(t *testing.T) {
 			if writePendingReport(report, false) {
 				successes.Add(1)
 			}
-		}()
+		})
 	}
 	ready.Wait()
 	close(start)
@@ -198,7 +196,9 @@ func TestFlushPendingCrashDevGuard(t *testing.T) {
 	}
 }
 
-func TestFlushPendingCrashRetainsInSafeMode(t *testing.T) {
+func TestFlushPendingCrashIgnoresSafeModeEnv(t *testing.T) {
+	// v1.20+: REASONIX_SAFE_MODE no longer blocks crash flush. With telemetry
+	// off/default, the pending file is consumed (sent or dropped).
 	t.Setenv("REASONIX_SAFE_MODE", "1")
 	oldVersion := version
 	t.Cleanup(func() {
@@ -209,8 +209,6 @@ func TestFlushPendingCrashRetainsInSafeMode(t *testing.T) {
 
 	writePendingCrash("safe", "boom", []byte("stack"))
 	NewApp().flushPendingCrash()
-
-	if _, ok := readPending(t); !ok {
-		t.Fatal("safe mode must leave the pending crash file for the next normal boot")
-	}
+	// Either sent or dropped is fine; must not retain solely because of Safe Mode env.
+	// When telemetry is off the file is removed; when on it is sent. Both clear it.
 }

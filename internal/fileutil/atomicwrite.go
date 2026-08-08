@@ -17,17 +17,30 @@ var (
 	renameFile = os.Rename
 )
 
-// AtomicWriteFile writes data to path crash-safely: it writes to a sibling tmp
-// file, fsyncs it so the bytes reach disk (guarding against power loss, not just
-// process crash — see #4615), then atomically renames it onto path via
-// ReplaceFile. A crash or power cut at any point leaves either the old file or
-// the complete new file, never a truncated one. perm applies to the final file.
+// AtomicWriteFile writes data to a sibling temporary file, fsyncs it, then
+// publishes it via ReplaceFile. On filesystems that support replacement rename,
+// readers see either the old file or the complete new file. ReplaceFile retains
+// its compatibility copy fallback for Windows filter drivers that reject a
+// same-directory rename as cross-device; callers that cannot tolerate that
+// non-atomic fallback must use AtomicWriteFileStrict.
 func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFile(path, data, perm, true)
+}
+
+// AtomicWriteFileStrict publishes data only through an atomic rename. Unlike
+// AtomicWriteFile, a cross-device/filter-driver error is returned without ever
+// truncating path. Use it for commit pointers whose corruption would make the
+// surrounding state impossible to recover automatically.
+func AtomicWriteFileStrict(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFile(path, data, perm, false)
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode, allowCrossDeviceCopy bool) error {
 	tmpPath, err := writeAtomicTemp(path, data, perm)
 	if err != nil {
 		return err
 	}
-	if err := ReplaceFile(tmpPath, path); err != nil {
+	if err := replaceFile(tmpPath, path, allowCrossDeviceCopy); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
@@ -49,6 +62,23 @@ func AtomicCreateFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// AtomicOverwriteFile replaces an existing file's contents atomically while
+// keeping the two properties a bare rename drops: the file's current permission
+// bits (an executable script must not come back 0644) and the symlink target
+// (a link must be written through, not replaced by a regular file). defaultPerm
+// applies only when path does not exist yet.
+func AtomicOverwriteFile(path string, data []byte, defaultPerm os.FileMode) error {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
+	perm := defaultPerm
+	if info, err := os.Stat(target); err == nil {
+		perm = info.Mode().Perm()
+	}
+	return AtomicWriteFile(target, data, perm)
+}
+
 func writeAtomicTemp(path string, data []byte, perm os.FileMode) (string, error) {
 	dir := filepath.Dir(path)
 	dirPerm := os.FileMode(0o755)
@@ -63,14 +93,25 @@ func writeAtomicTemp(path string, data []byte, perm os.FileMode) (string, error)
 		return "", fmt.Errorf("create tmp for %s: %w", path, err)
 	}
 	tmpPath := tmp.Name()
+	closed := false
+	closeTmp := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		return tmp.Close()
+	}
+	keep := false
+	defer func() {
+		_ = closeTmp()
+		if !keep {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
 		return "", fmt.Errorf("write tmp for %s: %w", path, err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
 		return "", fmt.Errorf("fsync tmp for %s: %w", path, err)
 	}
 	// Chmod the still-open handle, before Close, so there is no window between
@@ -78,14 +119,12 @@ func writeAtomicTemp(path string, data []byte, perm os.FileMode) (string, error)
 	// indexer) to grab or move the tmp and make the chmod fail with "file not
 	// found". CreateTemp makes a 0600 file, so this only widens when perm asks.
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
 		return "", fmt.Errorf("chmod tmp for %s: %w", path, err)
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+	if err := closeTmp(); err != nil {
 		return "", fmt.Errorf("close tmp for %s: %w", path, err)
 	}
+	keep = true
 	return tmpPath, nil
 }
 
@@ -111,12 +150,19 @@ func writeAtomicTemp(path string, data []byte, perm os.FileMode) (string, error)
 //
 // A missing tmp means the write itself failed and no retry can help.
 func ReplaceFile(tmp, dest string) error {
+	return replaceFile(tmp, dest, true)
+}
+
+func replaceFile(tmp, dest string, allowCrossDeviceCopy bool) error {
 	var err error
 	for attempt := 0; ; attempt++ {
 		if err = renameFile(tmp, dest); err == nil {
 			return nil
 		}
 		if renameCrossesDevice(err) {
+			if !allowCrossDeviceCopy {
+				return err
+			}
 			if copyOnto(tmp, dest) == nil {
 				return nil
 			}

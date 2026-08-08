@@ -6,6 +6,7 @@ import (
 	"net"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,7 +22,6 @@ type Options struct {
 	Version        string
 	HomeDir        string
 	Interactive    bool
-	SafeMode       bool
 	Proxy          netclient.ProxySpec
 	CLIMode        string
 	Profile        string
@@ -38,8 +38,8 @@ type Reporter struct {
 }
 
 func Start(opts Options) *Reporter {
-	if !Enabled(opts.Mode, opts.Version, opts.Interactive, opts.SafeMode) {
-		if (strings.EqualFold(strings.TrimSpace(opts.Mode), "off") && !opts.SafeMode) || envOptOut() {
+	if !Enabled(opts.Mode, opts.Version, opts.Interactive) {
+		if strings.EqualFold(strings.TrimSpace(opts.Mode), "off") || envOptOut() {
 			_ = Cleanup(opts.HomeDir)
 		}
 		return nil
@@ -131,6 +131,23 @@ func (s *sink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 	event.RecordReadinessAudit(s.inner, a)
 }
 
+func (s *sink) RecordContractShadow(a event.ContractShadowAudit) {
+	event.RecordContractShadow(s.inner, a)
+}
+
+func (s *sink) RecordOutcomeProgress(sample evidence.OutcomeSample) {
+	event.RecordOutcomeProgress(s.inner, sample)
+}
+
+func (s *sink) RecordDelegationAdmission(a event.DelegationAdmissionAudit) {
+	event.RecordDelegationAdmission(s.inner, a)
+}
+
+func (s *sink) RecordProtocolRecovery(a event.ProtocolRecoveryAudit) {
+	add(s.counts, "tool_call_reasoning_recovery", string(a.Kind), 1)
+	event.RecordProtocolRecovery(s.inner, a)
+}
+
 func (s *sink) observe(e event.Event) {
 	switch e.Kind {
 	case event.TurnStarted:
@@ -213,10 +230,8 @@ func safeBucket(value, fallback string) string {
 
 func enumBucket(value string, allowed ...string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
-	for _, item := range allowed {
-		if value == item {
-			return value
-		}
+	if slices.Contains(allowed, value) {
+		return value
 	}
 	return "other"
 }
